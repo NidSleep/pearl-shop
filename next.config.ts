@@ -1,9 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
-  cacheComponents: true,
-  partialPrefetching: true,
+  images: {
+    // Allow product images hosted in Supabase Storage.
+    remotePatterns: [{ protocol: "https", hostname: "*.supabase.co" }],
+  },
   turbopack: {
     rules: {
       "*.css": {
