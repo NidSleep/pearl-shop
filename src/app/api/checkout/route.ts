@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { siteUrl } from "@/lib/env";
+import { checkCheckoutRateLimit } from "@/lib/rate-limit";
 import { getStripe } from "@/lib/stripe";
 import { getAdminClient } from "@/lib/supabase";
 
@@ -28,12 +29,27 @@ function parseItems(body: unknown): RequestItem[] | null {
 
 /**
  * POST /api/checkout
+ * 0. Rate limit every attempt before parsing the cart or doing checkout work.
  * 1. Validate the cart and look up REAL prices from the database
  *    (never trust prices sent by the browser).
  * 2. Create a `pending` order.
  * 3. Create a Stripe Checkout Session and return its URL.
  */
 export async function POST(request: Request) {
+  const rateLimit = await checkCheckoutRateLimit(request);
+  if (!rateLimit.ok) {
+    if (rateLimit.status === 429) {
+      return NextResponse.json(
+        { error: "Too many checkout attempts. Please wait a few minutes and try again." },
+        { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+      );
+    }
+    return NextResponse.json(
+      { error: "Checkout is temporarily unavailable. Please try again shortly." },
+      { status: 503 },
+    );
+  }
+
   const items = parseItems(await request.json().catch(() => null));
   if (!items) {
     return NextResponse.json({ error: "Invalid cart" }, { status: 400 });
