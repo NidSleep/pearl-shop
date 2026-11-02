@@ -1,8 +1,11 @@
 import { ProductCard } from "@/components/ProductCard";
-import { getActiveProducts } from "@/lib/products";
+import { ProductFilters } from "@/components/ProductFilters";
+import { getActiveProducts, hasActiveFilters, parseProductFilters } from "@/lib/products";
 
-export default async function HomePage() {
-  const products = await getActiveProducts();
+export default async function HomePage({ searchParams }: PageProps<"/">) {
+  const filters = parseProductFilters(await searchParams);
+  const products = await getActiveProducts(filters);
+  const isFiltered = hasActiveFilters(filters);
 
   return (
     <div className="space-y-10">
@@ -13,8 +16,14 @@ export default async function HomePage() {
         </p>
       </section>
 
+      <ProductFilters filters={filters} />
+
       {products.length === 0 ? (
-        <p className="text-center text-stone-500">No products yet. Run supabase/seed.sql to add samples.</p>
+        <p className="text-center text-stone-500">
+          {isFiltered
+            ? "No pearls match these filters."
+            : "No products yet. Run supabase/seed.sql to add samples."}
+        </p>
       ) : (
         <div className="grid grid-cols-2 gap-6 md:grid-cols-3 lg:grid-cols-4">
           {products.map((p) => (
