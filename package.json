@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "images:upload": "node --env-file=.env.local scripts/upload-product-images.mjs"
+    "images:upload": "node --conditions=react-server --env-file=.env.local scripts/upload-product-images.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",

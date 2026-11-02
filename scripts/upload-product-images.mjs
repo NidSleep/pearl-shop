@@ -6,7 +6,10 @@
 // Name each photo after the product's slug, e.g. `akoya-classic-strand.jpg`.
 // Supported: .jpg .jpeg .png .webp. Re-running replaces the existing photo.
 // Reads NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY from .env.local.
+// Uses the service role key, so it is server-only (AGENTS.md rule 3). The npm
+// script runs Node with `--conditions=react-server`, which makes this import a no-op.
 
+import "server-only";
 import { readdir, readFile } from "node:fs/promises";
 import { extname, basename, join } from "node:path";
 import { createClient } from "@supabase/supabase-js";
