@@ -71,6 +71,11 @@ failures. Rejected attempts also increment the counter. A 429 response includes
 can pass around a window boundary (5 before and 5 after). Card retries on Stripe's
 hosted page do not call this route.
 
+Before the limiter, requests that a third-party page could trigger from a
+visitor's browser are rejected with **403** and do not consume quota: the body
+must be `application/json`, and `Sec-Fetch-Site` / `Origin` (when present) must
+be same-origin. This stops other sites from burning a visitor's quota.
+
 The limiter runs before body parsing, product reads, order writes or Stripe calls.
 It fails closed with **503** if the secret is missing, the production client IP is
 missing or invalid, or the limiter RPC fails, times out after 3 seconds, or returns
