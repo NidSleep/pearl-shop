@@ -40,7 +40,8 @@ supabase/
 
 1. **Install**: `npm install`
 2. **Supabase**: create a project at https://supabase.com →
-   SQL Editor → run `supabase/migrations/0001_init.sql`, then `supabase/seed.sql`.
+   SQL Editor → run `supabase/migrations/0001_init.sql`, `0002_product_images_bucket.sql`,
+   then `supabase/seed.sql`.
 3. **Stripe**: create an account at https://stripe.com, stay in **Test mode**.
 4. **Env**: `cp .env.example .env.local` and fill in the keys.
 5. **Webhook (local)**: install the [Stripe CLI](https://docs.stripe.com/stripe-cli), then
@@ -52,6 +53,9 @@ supabase/
 6. **Run**: `npm run dev` → http://localhost:3000
 7. **Test payment**: card `4242 4242 4242 4242`, any future date, any CVC.
    Then check the `orders` table in Supabase — status should be `paid`.
+8. **Product photos** (optional): put photos named after each product slug
+   (e.g. `akoya-classic-strand.jpg`) in a folder, then run
+   `npm run images:upload -- path/to/folder`. Re-run to replace a photo.
 
 ## Production checklist
 - [ ] Deploy (e.g. Vercel) and set all env vars there
