@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { siteUrl } from "@/lib/env";
+import { checkCheckoutRateLimit } from "@/lib/rate-limit";
 import { getStripe } from "@/lib/stripe";
 import { getAdminClient } from "@/lib/supabase";
 
@@ -27,13 +28,60 @@ function parseItems(body: unknown): RequestItem[] | null {
 }
 
 /**
+ * Reject requests a third-party page could make the visitor's browser send,
+ * so they can't burn the visitor's rate-limit quota (QY-13 review).
+ * - JSON only: a cross-site JSON POST needs a CORS preflight, which this
+ *   route never grants, so browsers won't send it.
+ * - Sec-Fetch-Site / Origin, when the browser sends them, must be our own site.
+ * Requests without these headers (curl, scripts) come from the caller's own
+ * IP and are still rate limited.
+ */
+function isAllowedCheckoutRequest(request: Request): boolean {
+  const contentType = request.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
+  if (contentType !== "application/json") return false;
+
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") return false;
+
+  const origin = request.headers.get("origin");
+  if (origin) {
+    try {
+      if (new URL(origin).host !== request.headers.get("host")) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * POST /api/checkout
+ * 0. Drop cross-site requests (no quota used), then rate limit every attempt
+ *    before parsing the cart or doing checkout work.
  * 1. Validate the cart and look up REAL prices from the database
  *    (never trust prices sent by the browser).
  * 2. Create a `pending` order.
  * 3. Create a Stripe Checkout Session and return its URL.
  */
 export async function POST(request: Request) {
+  if (!isAllowedCheckoutRequest(request)) {
+    return NextResponse.json({ error: "Invalid request" }, { status: 403 });
+  }
+
+  const rateLimit = await checkCheckoutRateLimit(request);
+  if (!rateLimit.ok) {
+    if (rateLimit.status === 429) {
+      return NextResponse.json(
+        { error: "Too many checkout attempts. Please wait a few minutes and try again." },
+        { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+      );
+    }
+    return NextResponse.json(
+      { error: "Checkout is temporarily unavailable. Please try again shortly." },
+      { status: 503 },
+    );
+  }
+
   const items = parseItems(await request.json().catch(() => null));
   if (!items) {
     return NextResponse.json({ error: "Invalid cart" }, { status: 400 });
