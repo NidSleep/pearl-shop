@@ -1,6 +1,7 @@
-type IconName = "arrow" | "back" | "bag" | "check" | "lock" | "truck" | "gift" | "plus" | "minus";
+type IconName = "arrow" | "back" | "bag" | "check" | "lock" | "truck" | "gift" | "plus" | "minus" | "search";
 
 const paths: Record<IconName, React.ReactNode> = {
+  search: <><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></>,
   arrow: <path d="M4 12h16m-6-6 6 6-6 6" />,
   back: <path d="M20 12H4m6-6-6 6 6 6" />,
   bag: <><path d="M5 7h14l1 14H4L5 7Z" /><path d="M9 8V6a3 3 0 0 1 6 0v2" /></>,

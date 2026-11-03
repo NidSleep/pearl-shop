@@ -1,29 +1,16 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 
 export function Footer() {
   return (
     <footer className="site-footer">
       <div className="site-container footer-grid">
-        <div>
-          <Link href="/" className="wordmark">Pearl Shop</Link>
-          <p className="mt-4 max-w-xs text-sm leading-7">Pearl jewellery for a life well worn.<br />Malaysia & Singapore. Prices in MYR.</p>
-        </div>
-        <nav aria-label="Footer" className="footer-links">
-          <h2 className="eyebrow">Explore</h2>
-          <Link href="/#collection">The collection</Link>
-          <Link href="/#about">Our story</Link>
-          <Link href="/#pearl-care">Pearl care</Link>
-          <Link href="/cart">Your cart</Link>
-        </nav>
-        <div className="space-y-4 text-sm">
-          <h2 className="eyebrow">Thoughtfully yours</h2>
-          <p className="leading-7">Gift-ready packaging.<br />Secure checkout via Stripe.</p>
-        </div>
+        <div className="footer-brand"><Link href="/" className="wordmark">PEARL SHOP</Link><p>Pearls for your everyday.<br />Malaysia &amp; Singapore. All prices in MYR.</p></div>
+        <nav aria-label="Shop" className="footer-links"><h2 className="eyebrow">Shop</h2><Link href="/#collection">All pearls</Link><Link href="/?type=akoya#collection">Akoya</Link><Link href="/?type=freshwater#collection">Freshwater</Link><Link href="/?type=south_sea#collection">South Sea</Link><Link href="/?type=tahitian#collection">Tahitian</Link></nav>
+        <nav aria-label="Support" className="footer-links"><h2 className="eyebrow">Support</h2><Link href="/#shipping">Shipping</Link><Link href="/#pearl-care">Pearl care</Link><Link href="/cart">Your cart</Link></nav>
+        <nav aria-label="About" className="footer-links"><h2 className="eyebrow">About</h2><Link href="/#about">Our perspective</Link><Link href="/#collection">The collection</Link><p>Natural lustre.<br />Personal style.</p></nav>
       </div>
-      <div className="site-container footer-bottom">
-        <p>© {new Date().getFullYear()} Pearl Shop. All rights reserved.</p>
-        <p>A little lustre. Every day.</p>
-      </div>
+      <div className="site-container footer-bottom"><p>© {new Date().getFullYear()} Pearl Shop. All rights reserved.</p><p>Malaysia · MYR</p></div>
     </footer>
   );
 }
+

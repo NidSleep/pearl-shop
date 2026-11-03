@@ -8,8 +8,8 @@
 /* These tokens are also read by application CSS, so always emit them. */
 @theme static {
   --color-ivory: #ffffff;
-  --color-ink: #282724;
-  --color-muted: #64635f;
-  --color-champagne: #806b48;
+  --color-ink: #171717;
+  --color-muted: #626262;
+  --color-champagne: #474747;
 }
 
