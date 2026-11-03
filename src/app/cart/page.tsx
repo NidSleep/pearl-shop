@@ -5,6 +5,9 @@ import { useState } from "react";
 import { MAX_QUANTITY_PER_ITEM, useCart } from "@/lib/cart";
 import { formatPrice } from "@/lib/money";
 import { SHIPPING_RULES, shippingCents, type ShippingCountry } from "@/lib/shipping";
+import { PearlImage } from "@/components/PearlImage";
+import { Icon } from "@/components/Icon";
+import { QuantityControl } from "@/components/QuantityControl";
 
 export default function CartPage() {
   const { items, ready, subtotalCents, setQuantity, removeItem } = useCart();
@@ -34,80 +37,83 @@ export default function CartPage() {
     }
   }
 
-  if (!ready) return null;
+  if (!ready) return <div className="status-page" role="status"><h1 className="page-title">Your cart</h1><p>Gathering your selected pieces…</p></div>;
 
   if (items.length === 0) {
     return (
-      <div className="space-y-4 text-center">
-        <h1 className="font-serif text-3xl">Your cart is empty</h1>
-        <Link href="/" className="underline">
-          Continue shopping
+      <div className="status-page">
+        <div className="status-symbol"><Icon name="bag" /></div>
+        <h1 className="page-title">A little room for something lovely.</h1>
+        <p>Your cart is empty for now. Explore the collection and find a pearl to make your own.</p>
+        <Link href="/#collection" className="button mt-8">
+          Discover the collection <Icon name="arrow" />
         </Link>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-8">
-      <h1 className="font-serif text-3xl">Your cart</h1>
-      <ul className="divide-y divide-stone-200 border-y border-stone-200">
+    <div>
+      <div className="collection-heading mb-8">
+        <div><h1 className="page-title">Your cart</h1><p className="mt-3">A few beautiful choices, all in one place.</p></div>
+        <Link href="/#collection" className="text-link"><Icon name="back" className="size-4" /> Continue shopping</Link>
+      </div>
+      <div className="cart-layout">
+      <ul className="cart-items" aria-label="Selected pieces">
         {items.map((item) => (
-          <li key={item.productId} className="flex items-center justify-between gap-4 py-4">
-            <div>
-              <Link href={`/products/${item.slug}`} className="font-medium hover:underline">
-                {item.name}
-              </Link>
-              <p className="text-sm text-stone-500">{formatPrice(item.priceCents)}</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <select
-                value={item.quantity}
-                onChange={(e) => setQuantity(item.productId, Number(e.target.value))}
-                className="rounded border border-stone-300 bg-white px-2 py-1"
-                aria-label={`Quantity for ${item.name}`}
-              >
-                {Array.from({ length: MAX_QUANTITY_PER_ITEM }, (_, i) => i + 1).map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              </select>
-              <button onClick={() => removeItem(item.productId)} className="text-sm text-stone-500 hover:text-rose-700">
-                Remove
-              </button>
+          <li key={item.productId} className="cart-item">
+            <Link href={`/products/${item.slug}`} className="cart-thumbnail" tabIndex={-1} aria-hidden="true">
+              <PearlImage src={item.imageUrl} alt="" sizes="100px" />
+            </Link>
+            <div className="min-w-0">
+              <div className="cart-item-heading">
+                <div>
+                  <Link href={`/products/${item.slug}`} className="font-serif text-lg leading-snug hover:underline">{item.name}</Link>
+                  <p className="mt-2 text-xs text-muted">{formatPrice(item.priceCents)} each</p>
+                </div>
+                <p className="shrink-0 text-sm font-medium tabular-nums">{formatPrice(item.priceCents * item.quantity)}</p>
+              </div>
+              <div className="cart-item-actions">
+                <QuantityControl value={item.quantity} max={MAX_QUANTITY_PER_ITEM} onChange={(quantity) => setQuantity(item.productId, quantity)} name={item.name} disabled={loading} />
+                <button type="button" disabled={loading} onClick={() => removeItem(item.productId)} className="remove-button" aria-label={`Remove ${item.name} from cart`}>Remove</button>
+              </div>
             </div>
           </li>
         ))}
       </ul>
-      <div className="flex items-center justify-between text-lg">
-        <span>Subtotal</span>
-        <span>{formatPrice(subtotalCents)}</span>
-      </div>
-      <div className="space-y-3">
-        <label htmlFor="shipping-country" className="block text-sm font-medium">Deliver to</label>
+      <aside className="summary-card space-y-6" aria-labelledby="summary-title" aria-busy={loading}>
+        <h2 id="summary-title" className="font-serif text-2xl">Order summary</h2>
+        <div className="summary-row"><span>Subtotal</span><span className="font-medium tabular-nums">{formatPrice(subtotalCents)}</span></div>
+      <div className="space-y-3 border-t border-stone-300 pt-5">
+        <label htmlFor="shipping-country" className="block text-sm font-medium">Delivery country</label>
         <select id="shipping-country" value={country} disabled={loading}
           onChange={(event) => setCountry(event.target.value as ShippingCountry)}
-          className="w-full rounded border border-stone-300 bg-white px-3 py-2">
+          className="field">
           {Object.entries(SHIPPING_RULES).map(([code, rule]) => (
             <option key={code} value={code}>{rule.countryName}</option>
           ))}
         </select>
-        <div className="flex justify-between text-sm">
-          <span>Estimated shipping</span><span>{formatPrice(shippingCents(country, subtotalCents))}</span>
+        <div className="summary-row">
+          <span>Estimated shipping</span><span className="tabular-nums">{shippingCents(country, subtotalCents) === 0 ? "Complimentary" : formatPrice(shippingCents(country, subtotalCents))}</span>
         </div>
-        <p className="text-sm text-stone-500">
+        <p className="text-xs leading-6 text-muted">
+          Shipping is calculated by country. {" "}
           {formatPrice(SHIPPING_RULES[country].feeCents)} flat; free on item subtotals of {formatPrice(SHIPPING_RULES[country].freeFromCents)} or more.
           {" "}Final prices and shipping are confirmed on the payment page. To change country, return to your cart.
         </p>
       </div>
-      {error && <p className="text-sm text-rose-700">{error}</p>}
+      <div className="summary-row border-t border-stone-300 pt-5"><span className="font-medium">Estimated total</span><span className="text-xl font-medium tabular-nums">{formatPrice(subtotalCents + shippingCents(country, subtotalCents))}</span></div>
+      {error && <p role="alert" className="error-message">{error}</p>}
       <button
         onClick={checkout}
         disabled={loading}
-        className="w-full rounded-md bg-stone-900 px-6 py-3 text-white hover:bg-stone-700 disabled:opacity-50"
+        className="button w-full"
       >
-        {loading ? "Redirecting to payment…" : "Checkout"}
+        {loading ? "Opening secure checkout…" : <>Secure checkout <Icon name="arrow" /></>}
       </button>
+      <p role="status" className="text-center text-xs text-muted">{loading ? "Please wait while we take you to Stripe." : <span className="inline-flex items-center gap-2"><Icon name="lock" className="size-4" /> Payments securely processed by Stripe</span>}</p>
+      </aside>
+      </div>
     </div>
   );
 }

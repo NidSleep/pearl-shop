@@ -1,13 +1,13 @@
 import Image from "next/image";
 
 /** Product image, or a soft pearl-toned placeholder when no image is set. */
-export function PearlImage({ src, alt }: { src: string | null; alt: string }) {
+export function PearlImage({ src, alt, sizes = "(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw", preload = false }: { src: string | null; alt: string; sizes?: string; preload?: boolean }) {
   if (!src) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-stone-100 via-white to-rose-50">
-        <div className="h-16 w-16 rounded-full bg-gradient-to-br from-white via-stone-100 to-stone-300 shadow-inner" />
+      <div role="img" aria-label={`${alt} — image coming soon`} className="image-placeholder">
+        <span className="font-serif text-xl">Image coming soon</span>
       </div>
     );
   }
-  return <Image src={src} alt={alt} fill className="object-cover" sizes="(max-width: 768px) 100vw, 33vw" />;
+  return <Image src={src} alt={alt} fill className="pearl-photo object-cover" sizes={sizes} preload={preload} />;
 }

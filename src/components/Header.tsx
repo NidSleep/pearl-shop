@@ -3,15 +3,17 @@ import { CartLink } from "./CartLink";
 
 export function Header() {
   return (
-    <header className="border-b border-stone-200 bg-white/80 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-        <Link href="/" className="font-serif text-2xl tracking-wide text-stone-900">
-          Pearl Shop
+    <header className="site-header">
+      <div className="site-container header-inner">
+        <Link href="/" className="wordmark" aria-label="Pearl Shop home">
+          Pearl Shop<span className="wordmark-dot" aria-hidden="true" />
         </Link>
-        <nav className="flex items-center gap-6 text-sm text-stone-600">
-          <Link href="/" className="hover:text-stone-900">
+        <nav aria-label="Main navigation" className="header-nav">
+          <Link href="/#collection" className="nav-link">
             Shop
           </Link>
+          <Link href="/#about" className="nav-link header-about">Our approach</Link>
+          <Link href="/#pearl-care" className="nav-link">Pearl care</Link>
           <CartLink />
         </nav>
       </div>

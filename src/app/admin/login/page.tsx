@@ -11,24 +11,24 @@ export default async function AdminLogin({ searchParams }: {
     : params.error ? "Could not sign in. Check your email, password and admin access." : null;
 
   return (
-    <div className="mx-auto max-w-sm space-y-6">
+    <div className="admin-login space-y-6">
       <div className="space-y-2">
         <h1 className="font-serif text-3xl">Admin sign in</h1>
         <p className="text-sm text-stone-600">Sign in to view and review customer orders.</p>
       </div>
-      {error && <p role="alert" className="text-sm text-rose-800">{error}</p>}
+      {error && <p role="alert" className="error-message">{error}</p>}
       <form action="/admin/login/submit" method="post" className="space-y-5">
         <div className="space-y-2">
           <label htmlFor="email" className="block text-sm font-medium">Email</label>
           <input id="email" name="email" type="email" autoComplete="username" required maxLength={254}
-            className="w-full rounded-md border border-stone-300 bg-white px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-700" />
+            className="field" />
         </div>
         <div className="space-y-2">
           <label htmlFor="password" className="block text-sm font-medium">Password</label>
           <input id="password" name="password" type="password" autoComplete="current-password" required maxLength={1024}
-            className="w-full rounded-md border border-stone-300 bg-white px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-700" />
+            className="field" />
         </div>
-        <button type="submit" className="w-full rounded-md bg-stone-900 px-5 py-3 text-white hover:bg-stone-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-700">
+        <button type="submit" className="button w-full">
           Sign in
         </button>
       </form>
