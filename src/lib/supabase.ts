@@ -5,6 +5,15 @@ import { requireEnv } from "./env";
 let publicClient: SupabaseClient | null = null;
 let adminClient: SupabaseClient | null = null;
 
+/** Fresh anon client for each auth operation: never share signed-in state. */
+export function createAuthClient(): SupabaseClient {
+  return createClient(
+    requireEnv("NEXT_PUBLIC_SUPABASE_URL"),
+    requireEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
+    { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } },
+  );
+}
+
 /**
  * Anon client: respects Row Level Security.
  * Use for reading public data such as products.
@@ -20,7 +29,7 @@ export function getPublicClient(): SupabaseClient {
 
 /**
  * Admin client: BYPASSES Row Level Security.
- * Only use in server code (route handlers) for orders and payment updates.
+ * Only use in server code for payments or after explicit admin authorization.
  */
 export function getAdminClient(): SupabaseClient {
   adminClient ??= createClient(

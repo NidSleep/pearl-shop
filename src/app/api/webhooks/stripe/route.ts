@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
 import { requireEnv } from "@/lib/env";
+import { sendOrderConfirmation } from "@/lib/email";
 import { getStripe } from "@/lib/stripe";
 import { getAdminClient } from "@/lib/supabase";
 
@@ -28,8 +29,9 @@ export async function POST(request: Request) {
   let event: Stripe.Event;
   try {
     event = getStripe().webhooks.constructEvent(rawBody, signature, requireEnv("STRIPE_WEBHOOK_SECRET"));
-  } catch (err) {
-    console.error("webhook: signature verification failed", err);
+  } catch {
+    // Stripe signature errors include the raw request payload (customer PII).
+    console.error("webhook: signature verification failed");
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
 
@@ -54,8 +56,8 @@ export async function POST(request: Request) {
         // Ignore events we don't care about.
         break;
     }
-  } catch (err) {
-    console.error(`webhook: failed to handle ${event.type}`, err);
+  } catch {
+    console.error(`webhook: failed to handle ${event.type}`);
     // Non-2xx tells Stripe to retry later.
     return NextResponse.json({ error: "Handler failed" }, { status: 500 });
   }
@@ -64,6 +66,7 @@ export async function POST(request: Request) {
 }
 
 async function markPaid(session: Stripe.Checkout.Session) {
+  if (session.amount_total === null) throw new Error("Paid session has no total");
   const paymentIntentId =
     typeof session.payment_intent === "string" ? session.payment_intent : (session.payment_intent?.id ?? null);
 
@@ -73,6 +76,8 @@ async function markPaid(session: Stripe.Checkout.Session) {
     p_customer_email: session.customer_details?.email ?? null,
     p_customer_name: session.customer_details?.name ?? null,
     p_shipping_address: session.collected_information?.shipping_details ?? null,
+    p_shipping_cents: session.shipping_cost?.amount_total ?? 0,
+    p_amount_paid_cents: session.amount_total,
   });
 
   if (error) throw error;
@@ -81,7 +86,10 @@ async function markPaid(session: Stripe.Checkout.Session) {
     // session id hasn't been saved to the order yet.
     throw new Error(`No order found for session ${session.id}`);
   }
-  console.info(`webhook: order for session ${session.id} → ${data}`);
+  if (data === "paid" || data === "already_paid") {
+    await sendOrderConfirmation(session.id);
+  }
+  console.info(`webhook: payment result ${data}`);
 }
 
 async function setStatusIfPending(sessionId: string, status: "failed" | "cancelled") {

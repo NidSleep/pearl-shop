@@ -43,7 +43,8 @@ supabase/
 1. **Install**: `npm install`
 2. **Supabase**: create a project at https://supabase.com →
    SQL Editor → run `supabase/migrations/0001_init.sql`, `0002_product_images_bucket.sql`,
-   and `0003_checkout_rate_limit.sql` (as `postgres`, with `pg_cron` available),
+   `0003_checkout_rate_limit.sql` (as `postgres`, with `pg_cron` available),
+   `0004_order_shipping.sql`, and `0005_order_email.sql`,
    then `supabase/seed.sql`.
 3. **Stripe**: create an account at https://stripe.com, stay in **Test mode**.
 4. **Env**: `cp .env.example .env.local` and fill in the keys, including
@@ -61,6 +62,66 @@ supabase/
 8. **Product photos** (optional): put photos named after each product slug
    (e.g. `akoya-classic-strand.jpg`) in a folder, then run
    `npm run images:upload -- path/to/folder`. Re-run to replace a photo.
+
+## Shipping
+
+All prices and shipping fees are in MYR, stored as integer cents.
+Malaysia delivery costs RM10, free when the item subtotal is at least RM300.
+Singapore delivery costs RM25, free when the item subtotal is at least RM500.
+Rules live in `src/lib/shipping.ts`. Checkout calculates eligibility from database
+prices, ignoring browser totals. Customers choose a country in the cart; the hosted
+Stripe session accepts addresses only in that country and offers its single correct
+rate through `shipping_options`. Return to the cart to change destination country.
+
+Apply `0004_order_shipping.sql` **before deploying** the shipping code. It replaces
+the old payment RPC signature while retaining row locking, idempotency, stock updates
+and service-role-only execution. `orders.total_cents` is the item subtotal;
+`shipping_cents` stores delivery, and `amount_paid_cents` stores Stripe's actual total.
+The signed webhook records both payment amounts in the same transaction as payment.
+
+## Confirmation emails
+
+Apply `0005_order_email.sql` before deploying email code. Set server-only
+`RESEND_API_KEY` and `EMAIL_FROM` (a sender on a verified Resend domain).
+If either is missing, the webhook warns and skips email without failing payment.
+No email SDK is required; `src/lib/email.ts` uses the Resend HTTP API.
+
+Only the signed payment webhook initiates confirmations, after `mark_order_paid`
+returns `paid` or `already_paid`. A conditional update claims the paid order by
+setting `confirmation_email_sent_at` only when null. Only the claimer sends;
+successful sends keep the timestamp. A failed send releases its own claim and
+returns HTTP 500 so Stripe retries. A stable Resend idempotency key also protects
+against ambiguous HTTP failures within Resend's 24-hour deduplication window.
+HTML escapes all order/address data; logs exclude recipients and email content.
+
+The timestamp is a claim, not proof of delivery. If the process terminates after
+claiming, or releasing a failed claim fails, inspect the email provider before
+manually clearing it and replaying the Stripe event. No HTTP provider plus database
+can guarantee exactly-once delivery across every crash. If email was disabled,
+configure it and replay a paid event to send an unsent confirmation.
+
+## Admin orders
+
+1. In Supabase Dashboard → Authentication → Users → Add user, create an email and
+   password user (auto-confirm the email, or complete email verification). Use a
+   strong password; do not add credentials to source control.
+2. Set server-only `ADMIN_EMAILS` to that email, or a comma-separated list of
+   approved user emails. Matching ignores case and surrounding whitespace. An
+   empty allowlist denies access. Restart/redeploy after changing environment vars.
+3. Visit `/admin/login`, sign in, then review `/admin/orders`. Filter by status;
+   pages contain 50 orders, newest first. Items counts units. Dates use Malaysia
+   time. Highlighted rows have `needs_attention=true` and require stock review.
+   Paid totals use Stripe's actual total; unpaid totals include estimated shipping.
+
+Authentication uses isolated anon Supabase clients and verifies the access token
+with `auth.getUser(token)` plus the allowlist on **every** protected request, before
+any service-role order read. Login and logout accept only same-origin form POSTs.
+The token is stored in an HttpOnly, SameSite=Lax cookie scoped to `/admin`, with
+Secure enabled in production and expiry aligned to the token. Refresh tokens are
+never stored; sign in again when the access token expires. Sign out clears the
+browser's admin cookie. Removing an email from `ADMIN_EMAILS` denies future admin
+requests. Supabase Auth manages password authentication and its own rate limits.
+Admin pages are marked `noindex, nofollow`; authorization protects the data.
 
 ## Checkout rate limiting
 
