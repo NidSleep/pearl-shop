@@ -44,16 +44,16 @@ export default async function ProductPage({ params }: PageProps<"/products/[slug
         <Icon name="back" className="size-4" /> Back to the collection
       </Link>
       <div className="product-layout">
-        <div className="product-detail-image relative w-full aspect-square overflow-hidden">
+        <div className="product-detail-stage"><div className="product-detail-image relative w-full aspect-square overflow-hidden">
           <PearlImage src={product.image_url} alt={product.name} sizes="(max-width: 767px) 100vw, 55vw" preload />
-        </div>
+        </div><p className="product-image-caption">{PEARL_TYPE_LABELS[product.pearl_type]}<span>Pearl Shop</span></p></div>
         <div className="product-details space-y-7">
           <div className="space-y-4">
             <h1 className="page-title">{product.name}</h1>
             <p className="text-2xl tabular-nums">{formatPrice(product.price_cents, product.currency)}</p>
             <p className="flex items-center gap-2 text-xs text-muted">{product.stock === 0 ? "Currently sold out" : <><Icon name="check" className="size-4" /> Available to order</>}</p>
           </div>
-          {product.description && <p className="leading-relaxed text-stone-600">{product.description}</p>}
+          {product.description && <p className="product-description">{product.description}</p>}
           <dl className="product-specs" aria-label="Product details">
             {specs
               .filter(([, value]) => value)

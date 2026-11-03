@@ -12,28 +12,45 @@ export default async function HomePage({ searchParams }: PageProps<"/">) {
   const products = await getActiveProducts(filters);
   const isFiltered = hasActiveFilters(filters);
   const featured = products.find((product) => product.image_url);
+  const companion = products.find((product) => product.image_url && product.id !== featured?.id);
 
   return (
     <>
       {!isFiltered && <>
         <section className={`hero ${!featured ? "hero-no-image" : ""}`} aria-labelledby="hero-title">
           <div className="hero-copy">
-            <h1 id="hero-title">A little lustre.<br /><em>A lasting impression.</em></h1>
-            <p>Pearl jewellery for the everyday and the unforgettable. Find the piece that feels like you.</p>
-            <div className="hero-actions">
-              <a href="#collection" className="button">Explore the collection <Icon name="arrow" /></a>
-              <a href="#pearl-care" className="text-link">A little pearl care</a>
+            <h1 id="hero-title">A little lustre.<br /><em>A lasting<br className="mobile-break" /> impression.</em></h1>
+            <div className="hero-intro">
+              <p>Pearl jewellery for the everyday and the unforgettable. Find the piece that feels like you.</p>
+              <div className="hero-actions">
+                <a href="#collection" className="button">Explore the collection <Icon name="arrow" /></a>
+              </div>
             </div>
           </div>
-          {featured && <figure className="hero-figure min-w-0">
-            <div className="hero-image relative w-full aspect-[5/4] overflow-hidden md:aspect-[1/1.05]">
-              <PearlImage src={featured.image_url} alt={featured.name} sizes="(max-width: 767px) 100vw, 50vw" preload />
+          <div className="hero-gallery">
+            <div className="hero-aside">
+              {companion && (
+                <Link href={`/products/${companion.slug}`} className="hero-companion" aria-label={`Discover ${companion.name}`}>
+                  <div className="hero-companion-image">
+                    <PearlImage src={companion.image_url} alt={companion.name} sizes="(max-width: 767px) 35vw, 22vw" />
+                  </div>
+                  <span>{companion.name} <Icon name="arrow" className="size-4" /></span>
+                </Link>
+              )}
+              <p className="hero-aside-note">Some things never<br />lose their allure.</p>
             </div>
-            <figcaption className="hero-caption">
-              <span className="min-w-0">{featured.name}</span>
-              <Link href={`/products/${featured.slug}`} className="inline-flex shrink-0 items-center gap-2">Discover <Icon name="arrow" className="size-4" /></Link>
-            </figcaption>
-          </figure>}
+            {featured && (
+              <figure className="hero-figure min-w-0">
+                <div className="hero-image">
+                  <PearlImage src={featured.image_url} alt={featured.name} sizes="(max-width: 767px) 60vw, 55vw" preload />
+                </div>
+                <figcaption className="hero-caption">
+                  <span className="min-w-0">{featured.name}</span>
+                  <Link href={`/products/${featured.slug}`} className="inline-flex shrink-0 items-center gap-2">Discover <Icon name="arrow" className="size-4" /></Link>
+                </figcaption>
+              </figure>
+            )}
+          </div>
         </section>
         <div className="trust-strip" aria-label="Shopping with Pearl Shop">
           <div className="trust-item"><Icon name="lock" /><div><strong>A secure finishing step</strong><p>Checkout securely via Stripe</p></div></div>
@@ -61,8 +78,8 @@ export default async function HomePage({ searchParams }: PageProps<"/">) {
         )}
       </section>
       <section id="about" className="about-section" aria-labelledby="about-title">
-        <h2 id="about-title" className="section-heading">Beauty in the<br />smallest details.</h2>
-        <div className="space-y-5">
+        <div className="about-heading"><h2 id="about-title" className="section-heading">Beauty in the<br /><em>smallest details.</em></h2><a href="#collection" className="text-link">Find your expression <Icon name="arrow" /></a></div>
+        <div className="about-copy space-y-5">
           <p>A soft glow, a subtle colour, a shape with its own character. Pearls bring a quiet kind of beauty to the way we dress.</p>
           <p>Explore Akoya, freshwater, South Sea and Tahitian pearls. Compare each piece’s type, size and details to find your own expression of timeless.</p>
         </div>

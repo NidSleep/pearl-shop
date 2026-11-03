@@ -10,9 +10,9 @@ export function Header() {
         </Link>
         <nav aria-label="Main navigation" className="header-nav">
           <Link href="/#collection" className="nav-link">
-            Shop
+            Collection
           </Link>
-          <Link href="/#about" className="nav-link header-about">Our approach</Link>
+          <Link href="/#about" className="nav-link header-about">Our story</Link>
           <Link href="/#pearl-care" className="nav-link">Pearl care</Link>
           <CartLink />
         </nav>
