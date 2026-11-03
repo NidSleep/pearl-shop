@@ -44,7 +44,7 @@ export default async function ProductPage({ params }: PageProps<"/products/[slug
         <Icon name="back" className="size-4" /> Back to the collection
       </Link>
       <div className="product-layout">
-        <div className="product-detail-image">
+        <div className="product-detail-image relative w-full aspect-square overflow-hidden">
           <PearlImage src={product.image_url} alt={product.name} sizes="(max-width: 767px) 100vw, 55vw" preload />
         </div>
         <div className="product-details space-y-7">

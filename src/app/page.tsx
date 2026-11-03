@@ -25,8 +25,8 @@ export default async function HomePage({ searchParams }: PageProps<"/">) {
               <a href="#pearl-care" className="text-link">A little pearl care</a>
             </div>
           </div>
-          {featured && <figure className="hero-figure">
-            <div className="hero-image">
+          {featured && <figure className="hero-figure min-w-0">
+            <div className="hero-image relative w-full aspect-[5/4] overflow-hidden md:aspect-[1/1.05]">
               <PearlImage src={featured.image_url} alt={featured.name} sizes="(max-width: 767px) 100vw, 50vw" preload />
             </div>
             <figcaption className="hero-caption">

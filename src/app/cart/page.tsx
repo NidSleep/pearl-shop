@@ -62,7 +62,7 @@ export default function CartPage() {
       <ul className="cart-items" aria-label="Selected pieces">
         {items.map((item) => (
           <li key={item.productId} className="cart-item">
-            <Link href={`/products/${item.slug}`} className="cart-thumbnail" tabIndex={-1} aria-hidden="true">
+            <Link href={`/products/${item.slug}`} className="cart-thumbnail relative block w-full aspect-square overflow-hidden" tabIndex={-1} aria-hidden="true">
               <PearlImage src={item.imageUrl} alt="" sizes="100px" />
             </Link>
             <div className="min-w-0">

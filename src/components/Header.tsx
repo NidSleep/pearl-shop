@@ -3,7 +3,7 @@ import { CartLink } from "./CartLink";
 
 export function Header() {
   return (
-    <header className="site-header">
+    <header className="site-header sticky top-0 z-30">
       <div className="site-container header-inner">
         <Link href="/" className="wordmark" aria-label="Pearl Shop home">
           Pearl Shop<span className="wordmark-dot" aria-hidden="true" />
