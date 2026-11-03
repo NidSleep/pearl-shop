@@ -3,6 +3,7 @@ import { siteUrl } from "@/lib/env";
 import { checkCheckoutRateLimit } from "@/lib/rate-limit";
 import { getStripe } from "@/lib/stripe";
 import { getAdminClient } from "@/lib/supabase";
+import { isShippingCountry, SHIPPING_RULES, shippingCents } from "@/lib/shipping";
 
 const MAX_LINE_ITEMS = 20;
 const MAX_QUANTITY = 10;
@@ -82,7 +83,12 @@ export async function POST(request: Request) {
     );
   }
 
-  const items = parseItems(await request.json().catch(() => null));
+  const body: unknown = await request.json().catch(() => null);
+  const country = typeof body === "object" && body !== null && "country" in body ? body.country : null;
+  if (!isShippingCountry(country)) {
+    return NextResponse.json({ error: "Choose Malaysia or Singapore for delivery" }, { status: 400 });
+  }
+  const items = parseItems(body);
   if (!items) {
     return NextResponse.json({ error: "Invalid cart" }, { status: 400 });
   }
@@ -117,11 +123,12 @@ export async function POST(request: Request) {
   }
 
   const totalCents = lines.reduce((sum, l) => sum + l.product.price_cents * l.quantity, 0);
+  const shipping = shippingCents(country, totalCents);
 
   // 1) Create the pending order
   const { data: order, error: orderError } = await supabase
     .from("orders")
-    .insert({ status: "pending", total_cents: totalCents, currency: "myr" })
+    .insert({ status: "pending", total_cents: totalCents, shipping_cents: shipping, currency: "myr" })
     .select("id")
     .single();
 
@@ -160,7 +167,16 @@ export async function POST(request: Request) {
           product_data: { name: l.product.name },
         },
       })),
-      shipping_address_collection: { allowed_countries: ["MY", "SG"] },
+      // Hosted Checkout cannot restrict individual rates by country. Lock the
+      // address country to the cart's validated destination and offer one rate.
+      shipping_address_collection: { allowed_countries: [country] },
+      shipping_options: [{
+        shipping_rate_data: {
+          type: "fixed_amount",
+          fixed_amount: { amount: shipping, currency: "myr" },
+          display_name: shipping === 0 ? "Free shipping" : SHIPPING_RULES[country].displayName,
+        },
+      }],
       phone_number_collection: { enabled: true },
       expires_at: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS,
       success_url: `${siteUrl()}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
