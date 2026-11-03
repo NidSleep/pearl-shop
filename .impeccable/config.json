@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "arial",
+        "createdAt": "2026-11-03T08:36:22.784Z",
+        "reason": "Agent decision: src/lib/email.ts uses Arial as a broadly supported HTML email fallback; distinctive headings already use Georgia. This is intentional email-client compatibility, not a website typeface change."
+      }
+    ]
+  }
+}

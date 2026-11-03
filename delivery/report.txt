@@ -1,0 +1,105 @@
+Implementation and verification handoff
+=======================================
+
+No commits were created: the managed sandbox grants read-only access to .git;
+git add / git commit failed to create .git/index.lock (Permission denied).
+No push, dependency installation, .env.local changes, or Supabase/Stripe/Resend
+service calls were performed. Existing user changes remain untouched.
+
+Three separate issue patches are supplied in implementation order. Each patch
+was applied to a temporary copy of the original files; all 21 resulting files
+were compared with the final source and matched. manifest.json lists the exact
+files and intended commit messages. commit-issues.ps1 can create the three local
+commits from this working tree once normal .git write access is available.
+It requires the reviewed branch, original HEAD and an empty index, stages only
+the issue patches, and never changes the working files or pushes.
+
+Intended commits and files
+-------------------------
+
+QY-11: calculate country-specific shipping and persist Stripe totals
+  README.md
+  src/app/api/checkout/route.ts
+  src/app/api/webhooks/stripe/route.ts
+  src/app/cart/page.tsx
+  src/lib/shipping.ts
+  supabase/migrations/0004_order_shipping.sql
+  tests/load-ts.mjs
+  tests/shipping.test.mjs
+
+QY-9: send atomic, retryable order confirmation emails
+  .env.example
+  README.md
+  src/app/api/webhooks/stripe/route.ts
+  src/lib/email.ts
+  supabase/migrations/0005_order_email.sql
+  tests/email.test.mjs
+
+QY-10: add authenticated admin order management
+  .env.example
+  README.md
+  src/lib/supabase.ts
+  src/lib/admin-auth.ts
+  src/lib/admin-orders.ts
+  src/app/admin/layout.tsx
+  src/app/admin/login/page.tsx
+  src/app/admin/login/submit/route.ts
+  src/app/admin/logout/route.ts
+  src/app/admin/orders/page.tsx
+  tests/admin.test.mjs
+
+Checks
+------
+PASS: node --test tests/*.test.mjs (18 tests, all external service clients mocked).
+PASS: npm.cmd run lint (equivalent to npm run lint).
+PASS: npx.cmd tsc --noEmit, after next typegen refreshed stale route types.
+PASS: git diff --check and sequential patch application/content comparison.
+BLOCKED: ordinary npm.cmd run build cannot fetch the existing Geist/Playfair
+  stylesheets from fonts.googleapis.com in this network-restricted environment.
+PASS: default Turbopack production build using temporary local-only font mocks:
+  compilation, TypeScript, page-data collection, all 13 prerenders, finalization.
+  This is a supplemental check; rerun the ordinary build with font network access.
+PASS: supplemental webpack production build using cached font files.
+NOT RUN: live database migrations, payment/email/auth flows (service contact was
+  expressly prohibited). No local Postgres executable is available for SQL runs.
+NOT RUN: browser screenshot review; computer-use reported that the browser access
+  host is unavailable. Static fixture rendering succeeded; temporary QA removed.
+An independent read-only reviewer examined the source and tests. Its identified
+PII logging gap and out-of-range pagination behavior were fixed with regression
+tests that failed before the fixes and passed afterward.
+
+Implementation decisions
+------------------------
+* Country is chosen in the cart, validated server-side, and locked for that
+  Checkout session. Hosted Checkout cannot scope individual shipping rates to
+  different countries. Change the destination by returning to the cart.
+* total_cents retains the item subtotal; shipping_cents is delivery;
+  amount_paid_cents records Stripe's actual total in the payment transaction.
+* Both paid and already_paid may claim an unsent email, per the clarified request.
+  Missing sender or API key skips with a warning. Failed sends release their owned
+  claim and return webhook 500. Provider idempotency adds a second deduplication
+  layer, but a process crash after claiming can require manual recovery.
+* Admin auth uses a fresh anon client per operation; no shared signed-in state,
+  refresh token storage, or refresh process. Re-login when the access token expires.
+  Sign out clears the browser cookie. Dates use Malaysia time; items counts units.
+* Manually entered out-of-range pages redirect to a valid page while retaining
+  the status filter. Tied creation dates use id as a stable secondary sort key.
+
+Manual setup
+------------
+1. Apply 0004_order_shipping.sql, then 0005_order_email.sql, after existing 0001-
+   0003 and BEFORE deploying this code. Migration 0004 replaces the payment RPC
+   signature; coordinate the database update and deployment to avoid old workers
+   calling the removed signature. Replay failed webhook events after deployment.
+2. Set server-only RESEND_API_KEY, EMAIL_FROM (verified sender domain) and
+   ADMIN_EMAILS (comma-separated approved emails). Restart/redeploy after changes.
+3. Supabase Dashboard > Authentication > Users > Add user: create an email/password
+   user, auto-confirm the email or finish verification, and include that email in
+   ADMIN_EMAILS. Visit /admin/login. Use a strong password.
+4. With service access available, verify boundary shipping totals for MY/SG, a paid
+   confirmation, duplicate deliveries and a failed-email retry, an allowlisted and
+   denied admin, logout, order filtering/paging and needs_attention highlighting.
+5. Rerun the ordinary lint/tsc/build in the deployment-capable environment.
+6. To create the three local commits without staging unrelated working changes,
+   run delivery/commit-issues.ps1 in a PowerShell environment with .git write access.
+   Inspect the resulting commits and git status. Nothing is pushed by the script.

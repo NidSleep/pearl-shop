@@ -1,0 +1,557 @@
+diff --git a/.env.example b/.env.example
+--- a/.env.example
++++ b/.env.example
+@@ -24,3 +24,7 @@
+ RESEND_API_KEY=
+ # Use a sender on a verified Resend domain, e.g. Pearl Shop <orders@example.com>
+ EMAIL_FROM=
++
++# Server-only admin allowlist; comma-separated Supabase Auth user emails.
++# Case-insensitive; an empty list denies all admin access.
++ADMIN_EMAILS=
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -100,6 +100,29 @@
+ can guarantee exactly-once delivery across every crash. If email was disabled,
+ configure it and replay a paid event to send an unsent confirmation.
+ 
++## Admin orders
++
++1. In Supabase Dashboard → Authentication → Users → Add user, create an email and
++   password user (auto-confirm the email, or complete email verification). Use a
++   strong password; do not add credentials to source control.
++2. Set server-only `ADMIN_EMAILS` to that email, or a comma-separated list of
++   approved user emails. Matching ignores case and surrounding whitespace. An
++   empty allowlist denies access. Restart/redeploy after changing environment vars.
++3. Visit `/admin/login`, sign in, then review `/admin/orders`. Filter by status;
++   pages contain 50 orders, newest first. Items counts units. Dates use Malaysia
++   time. Highlighted rows have `needs_attention=true` and require stock review.
++   Paid totals use Stripe's actual total; unpaid totals include estimated shipping.
++
++Authentication uses isolated anon Supabase clients and verifies the access token
++with `auth.getUser(token)` plus the allowlist on **every** protected request, before
++any service-role order read. Login and logout accept only same-origin form POSTs.
++The token is stored in an HttpOnly, SameSite=Lax cookie scoped to `/admin`, with
++Secure enabled in production and expiry aligned to the token. Refresh tokens are
++never stored; sign in again when the access token expires. Sign out clears the
++browser's admin cookie. Removing an email from `ADMIN_EMAILS` denies future admin
++requests. Supabase Auth manages password authentication and its own rate limits.
++Admin pages are marked `noindex, nofollow`; authorization protects the data.
++
+ ## Checkout rate limiting
+ 
+ `POST /api/checkout` allows **5 attempts per IP per 10-minute fixed window**.
+diff --git a/src/lib/supabase.ts b/src/lib/supabase.ts
+--- a/src/lib/supabase.ts
++++ b/src/lib/supabase.ts
+@@ -4,6 +4,15 @@
+ 
+ let publicClient: SupabaseClient | null = null;
+ let adminClient: SupabaseClient | null = null;
++
++/** Fresh anon client for each auth operation: never share signed-in state. */
++export function createAuthClient(): SupabaseClient {
++  return createClient(
++    requireEnv("NEXT_PUBLIC_SUPABASE_URL"),
++    requireEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
++    { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } },
++  );
++}
+ 
+ /**
+  * Anon client: respects Row Level Security.
+@@ -20,7 +29,7 @@
+ 
+ /**
+  * Admin client: BYPASSES Row Level Security.
+- * Only use in server code (route handlers) for orders and payment updates.
++ * Only use in server code for payments or after explicit admin authorization.
+  */
+ export function getAdminClient(): SupabaseClient {
+   adminClient ??= createClient(
+diff --git a/src/lib/admin-auth.ts b/src/lib/admin-auth.ts
+new file mode 100644
+--- /dev/null
++++ b/src/lib/admin-auth.ts
+@@ -0,0 +1,52 @@
++import "server-only";
++import { cookies } from "next/headers";
++import { redirect } from "next/navigation";
++import { createAuthClient } from "@/lib/supabase";
++
++export const ADMIN_COOKIE = "pearl-admin-access";
++export const ADMIN_COOKIE_OPTIONS = {
++  httpOnly: true,
++  sameSite: "lax" as const,
++  path: "/admin",
++};
++
++export function isAdminEmail(email: string | null | undefined): boolean {
++  if (!email) return false;
++  const allowed = (process.env.ADMIN_EMAILS ?? "").split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
++  return allowed.includes(email.trim().toLowerCase());
++}
++
++/** Verify with Auth on every request; never authorize from decoded JWT claims. */
++export async function verifyAdminToken(token: string | undefined) {
++  if (!token) return null;
++  try {
++    const { data, error } = await createAuthClient().auth.getUser(token);
++    return !error && data.user && isAdminEmail(data.user.email) ? data.user : null;
++  } catch {
++    console.warn("admin auth: verification unavailable");
++    return null;
++  }
++}
++
++export async function getAdminUser() {
++  return verifyAdminToken((await cookies()).get(ADMIN_COOKIE)?.value);
++}
++
++export async function requireAdmin() {
++  const user = await getAdminUser();
++  if (!user) redirect("/admin/login");
++  return user;
++}
++
++/** Form POSTs require Origin, including scheme/port, before touching Auth. */
++export function isSameOriginAdminPost(request: Request): boolean {
++  const fetchSite = request.headers.get("sec-fetch-site");
++  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") return false;
++  const origin = request.headers.get("origin");
++  if (!origin) return false;
++  try {
++    return new URL(origin).origin === new URL(request.url).origin;
++  } catch {
++    return false;
++  }
++}
+diff --git a/src/lib/admin-orders.ts b/src/lib/admin-orders.ts
+new file mode 100644
+--- /dev/null
++++ b/src/lib/admin-orders.ts
+@@ -0,0 +1,57 @@
++import "server-only";
++import { redirect } from "next/navigation";
++import { requireAdmin } from "@/lib/admin-auth";
++import { getAdminClient } from "@/lib/supabase";
++
++export const ORDER_STATUSES = ["pending", "paid", "failed", "cancelled"] as const;
++export const ORDERS_PAGE_SIZE = 50;
++type OrderStatus = typeof ORDER_STATUSES[number];
++type SearchParams = Record<string, string | string[] | undefined>;
++
++export type AdminOrder = {
++  id: string;
++  created_at: string;
++  status: OrderStatus;
++  customer_email: string | null;
++  total_cents: number;
++  shipping_cents: number;
++  amount_paid_cents: number | null;
++  currency: string;
++  needs_attention: boolean;
++  order_items: { quantity: number }[];
++};
++
++export function parseOrderFilters(params: SearchParams) {
++  const first = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
++  const status = first(params.status);
++  const rawPage = first(params.page) ?? "1";
++  const page = /^\d+$/.test(rawPage) ? Number(rawPage) : 1;
++  return {
++    status: ORDER_STATUSES.includes(status as OrderStatus) ? status as OrderStatus : "" as const,
++    page: Number.isSafeInteger(page) && page >= 1 && page <= 1_000_000 ? page : 1,
++  };
++}
++
++export async function getAdminOrders(params: SearchParams) {
++  // Keep authorization beside the privileged read, rather than in a layout
++  // which Next can reuse across navigations without running it again.
++  await requireAdmin();
++  const { status, page } = parseOrderFilters(params);
++  let query = getAdminClient().from("orders")
++    .select("id, created_at, status, customer_email, total_cents, shipping_cents, amount_paid_cents, currency, needs_attention, order_items(quantity)", { count: "exact" });
++  if (status) query = query.eq("status", status);
++  const start = (page - 1) * ORDERS_PAGE_SIZE;
++  const { data, error, count } = await query
++    .order("created_at", { ascending: false })
++    .order("id", { ascending: false })
++    .range(start, start + ORDERS_PAGE_SIZE - 1);
++  const lastPage = Math.max(1, Math.ceil((count ?? 0) / ORDERS_PAGE_SIZE));
++  // A stale bookmark or orders removed between navigations can exceed the
++  // available range. PostgREST may return either an empty page or PGRST103.
++  if ((error?.code === "PGRST103" && page > 1) || (!error && page > lastPage)) {
++    const target = error ? 1 : lastPage;
++    redirect(`/admin/orders?${new URLSearchParams({ ...(status ? { status } : {}), page: String(target) })}`);
++  }
++  if (error) throw new Error("Could not load orders. Please try again.");
++  return { orders: (data ?? []) as AdminOrder[], count: count ?? 0, status, page };
++}
+diff --git a/src/app/admin/layout.tsx b/src/app/admin/layout.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/app/admin/layout.tsx
+@@ -0,0 +1,11 @@
++import type { Metadata } from "next";
++import type { ReactNode } from "react";
++
++export const metadata: Metadata = {
++  title: "Admin | Pearl Shop",
++  robots: { index: false, follow: false },
++};
++
++export default function AdminLayout({ children }: { children: ReactNode }) {
++  return children;
++}
+diff --git a/src/app/admin/login/page.tsx b/src/app/admin/login/page.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/app/admin/login/page.tsx
+@@ -0,0 +1,37 @@
++import { redirect } from "next/navigation";
++import { getAdminUser } from "@/lib/admin-auth";
++
++export default async function AdminLogin({ searchParams }: {
++  searchParams: Promise<Record<string, string | string[] | undefined>>;
++}) {
++  if (await getAdminUser()) redirect("/admin/orders");
++  const params = await searchParams;
++  const error = params.error === "unavailable"
++    ? "Sign-in is temporarily unavailable. Please try again shortly."
++    : params.error ? "Could not sign in. Check your email, password and admin access." : null;
++
++  return (
++    <div className="mx-auto max-w-sm space-y-6">
++      <div className="space-y-2">
++        <h1 className="font-serif text-3xl">Admin sign in</h1>
++        <p className="text-sm text-stone-600">Sign in to view and review customer orders.</p>
++      </div>
++      {error && <p role="alert" className="text-sm text-rose-800">{error}</p>}
++      <form action="/admin/login/submit" method="post" className="space-y-5">
++        <div className="space-y-2">
++          <label htmlFor="email" className="block text-sm font-medium">Email</label>
++          <input id="email" name="email" type="email" autoComplete="username" required maxLength={254}
++            className="w-full rounded-md border border-stone-300 bg-white px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-700" />
++        </div>
++        <div className="space-y-2">
++          <label htmlFor="password" className="block text-sm font-medium">Password</label>
++          <input id="password" name="password" type="password" autoComplete="current-password" required maxLength={1024}
++            className="w-full rounded-md border border-stone-300 bg-white px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-700" />
++        </div>
++        <button type="submit" className="w-full rounded-md bg-stone-900 px-5 py-3 text-white hover:bg-stone-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-700">
++          Sign in
++        </button>
++      </form>
++    </div>
++  );
++}
+diff --git a/src/app/admin/login/submit/route.ts b/src/app/admin/login/submit/route.ts
+new file mode 100644
+--- /dev/null
++++ b/src/app/admin/login/submit/route.ts
+@@ -0,0 +1,36 @@
++import { NextResponse } from "next/server";
++import { ADMIN_COOKIE, ADMIN_COOKIE_OPTIONS, isSameOriginAdminPost, verifyAdminToken } from "@/lib/admin-auth";
++import { createAuthClient } from "@/lib/supabase";
++
++function loginError(request: Request, reason: "invalid" | "unavailable") {
++  const response = NextResponse.redirect(new URL(`/admin/login?error=${reason}`, request.url), 303);
++  response.headers.set("Cache-Control", "no-store");
++  return response;
++}
++
++export async function POST(request: Request) {
++  if (!isSameOriginAdminPost(request)) return new Response("Invalid request", { status: 403 });
++  const form = await request.formData().catch(() => null);
++  const email = form?.get("email");
++  const password = form?.get("password");
++  if (typeof email !== "string" || !email.trim() || email.length > 254 ||
++      typeof password !== "string" || !password || password.length > 1024) {
++    return loginError(request, "invalid");
++  }
++  try {
++    const { data, error } = await createAuthClient().auth.signInWithPassword({ email: email.trim(), password });
++    const session = data.session;
++    if (error || !session || !await verifyAdminToken(session.access_token)) return loginError(request, "invalid");
++    const maxAge = (session.expires_at ?? 0) - Math.floor(Date.now() / 1000);
++    if (maxAge <= 0) return loginError(request, "invalid");
++    const response = NextResponse.redirect(new URL("/admin/orders", request.url), 303);
++    response.headers.set("Cache-Control", "no-store");
++    response.cookies.set(ADMIN_COOKIE, session.access_token, {
++      ...ADMIN_COOKIE_OPTIONS, secure: process.env.NODE_ENV === "production", maxAge,
++    });
++    return response;
++  } catch {
++    console.warn("admin login: authentication unavailable");
++    return loginError(request, "unavailable");
++  }
++}
+diff --git a/src/app/admin/logout/route.ts b/src/app/admin/logout/route.ts
+new file mode 100644
+--- /dev/null
++++ b/src/app/admin/logout/route.ts
+@@ -0,0 +1,13 @@
++import { NextResponse } from "next/server";
++import { ADMIN_COOKIE, ADMIN_COOKIE_OPTIONS, isSameOriginAdminPost, requireAdmin } from "@/lib/admin-auth";
++
++export async function POST(request: Request) {
++  if (!isSameOriginAdminPost(request)) return new Response("Invalid request", { status: 403 });
++  await requireAdmin();
++  const response = NextResponse.redirect(new URL("/admin/login", request.url), 303);
++  response.headers.set("Cache-Control", "no-store");
++  response.cookies.set(ADMIN_COOKIE, "", {
++    ...ADMIN_COOKIE_OPTIONS, secure: process.env.NODE_ENV === "production", maxAge: 0,
++  });
++  return response;
++}
+diff --git a/src/app/admin/orders/page.tsx b/src/app/admin/orders/page.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/app/admin/orders/page.tsx
+@@ -0,0 +1,70 @@
++import Link from "next/link";
++import { getAdminOrders, ORDER_STATUSES, ORDERS_PAGE_SIZE } from "@/lib/admin-orders";
++import { formatPrice } from "@/lib/money";
++
++const dateFormat = new Intl.DateTimeFormat("en-MY", {
++  dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kuala_Lumpur",
++});
++
++export default async function AdminOrders({ searchParams }: {
++  searchParams: Promise<Record<string, string | string[] | undefined>>;
++}) {
++  const { orders, count, status, page } = await getAdminOrders(await searchParams);
++  const pageUrl = (number: number) => `/admin/orders?${new URLSearchParams({ ...(status ? { status } : {}), page: String(number) })}`;
++  const pages = Math.max(1, Math.ceil(count / ORDERS_PAGE_SIZE));
++
++  return (
++    <div className="space-y-7">
++      <div className="flex flex-wrap items-center justify-between gap-4">
++        <h1 className="font-serif text-3xl">Orders</h1>
++        <form action="/admin/logout" method="post">
++          <button type="submit" className="rounded-md border border-stone-300 px-4 py-2 text-sm hover:bg-stone-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-700">Sign out</button>
++        </form>
++      </div>
++      <form action="/admin/orders" method="get" className="flex flex-wrap items-end gap-3">
++        <div className="space-y-2">
++          <label htmlFor="status" className="block text-sm font-medium">Order status</label>
++          <select id="status" name="status" defaultValue={status} className="rounded-md border border-stone-300 bg-white px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-700">
++            <option value="">All statuses</option>
++            {ORDER_STATUSES.map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}
++          </select>
++        </div>
++        <button type="submit" className="rounded-md bg-stone-900 px-4 py-2 text-sm text-white hover:bg-stone-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-700">Apply filter</button>
++        <p className="py-2 text-sm text-stone-600">{count} {count === 1 ? "order" : "orders"}</p>
++      </form>
++      <div className="overflow-x-auto rounded-md border border-stone-200 bg-white">
++        <table className="w-full text-left text-sm tabular-nums">
++          <caption className="sr-only">Customer orders, newest first. Dates use Malaysia time. Items counts units.</caption>
++          <thead className="border-b border-stone-200 bg-stone-100 text-stone-700">
++            <tr>{["Date (MYT)", "Order", "Status", "Customer email", "Items", "Shipping", "Total"].map((heading, index) => (
++              <th key={heading} scope="col" className={`whitespace-nowrap px-4 py-3 font-medium ${index >= 4 ? "text-right" : ""}`}>{heading}</th>
++            ))}</tr>
++          </thead>
++          <tbody className="divide-y divide-stone-200">
++            {orders.map((order) => (
++              <tr key={order.id} className={order.needs_attention ? "bg-amber-50" : "hover:bg-stone-50"}>
++                <td className="whitespace-nowrap px-4 py-4"><time dateTime={order.created_at}>{dateFormat.format(new Date(order.created_at))}</time></td>
++                <th scope="row" className="px-4 py-4 font-medium"><span title={order.id}>{order.id.slice(0, 8)}</span></th>
++                <td className="px-4 py-4">
++                  <span className="capitalize">{order.status}</span>
++                  {order.needs_attention && <span className="mt-1 block whitespace-nowrap text-xs font-medium text-amber-900">Needs attention</span>}
++                </td>
++                <td className="max-w-64 break-words px-4 py-4">{order.customer_email ?? "Not provided"}</td>
++                <td className="px-4 py-4 text-right">{order.order_items.reduce((sum, item) => sum + item.quantity, 0)}</td>
++                <td className="whitespace-nowrap px-4 py-4 text-right">{formatPrice(order.shipping_cents, order.currency)}</td>
++                <td className="whitespace-nowrap px-4 py-4 text-right font-medium">{formatPrice(order.amount_paid_cents ?? order.total_cents + order.shipping_cents, order.currency)}</td>
++              </tr>
++            ))}
++            {orders.length === 0 && <tr><td colSpan={7} className="px-4 py-12 text-center text-stone-600">No orders on this page. Try another status or page.</td></tr>}
++          </tbody>
++        </table>
++      </div>
++      <nav aria-label="Orders pagination" className="flex items-center justify-between gap-4 text-sm">
++        {page > 1 ? <Link href={pageUrl(page - 1)} prefetch={false} className="rounded-md border border-stone-300 px-4 py-2 hover:bg-stone-100">Previous</Link> : <span aria-disabled="true" className="px-4 py-2 text-stone-500">Previous</span>}
++        <span className="text-stone-600">Page {page} of {pages}</span>
++        {page < pages ? <Link href={pageUrl(page + 1)} prefetch={false} className="rounded-md border border-stone-300 px-4 py-2 hover:bg-stone-100">Next</Link> : <span aria-disabled="true" className="px-4 py-2 text-stone-500">Next</span>}
++      </nav>
++      <p className="text-xs text-stone-600">Highlighted orders need a stock review. Unpaid totals include estimated shipping.</p>
++    </div>
++  );
++}
+diff --git a/tests/admin.test.mjs b/tests/admin.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/admin.test.mjs
+@@ -0,0 +1,169 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { loadTs } from "./load-ts.mjs";
++
++test("admin allowlist is trimmed, case insensitive and fails closed", () => {
++  const previous = process.env.ADMIN_EMAILS;
++  try {
++    process.env.ADMIN_EMAILS = "  OWNER@example.test, second@example.test , ";
++    const { isAdminEmail } = loadTs("src/lib/admin-auth.ts");
++    assert.equal(isAdminEmail("owner@EXAMPLE.test"), true);
++    assert.equal(isAdminEmail("outsider@example.test"), false);
++    assert.equal(isAdminEmail(null), false);
++    delete process.env.ADMIN_EMAILS;
++    assert.equal(isAdminEmail("owner@example.test"), false);
++  } finally {
++    if (previous === undefined) delete process.env.ADMIN_EMAILS; else process.env.ADMIN_EMAILS = previous;
++  }
++});
++
++test("each admin verification calls live getUser and rejects invalid tokens and outsiders", async () => {
++  const previous = process.env.ADMIN_EMAILS;
++  process.env.ADMIN_EMAILS = "owner@example.test";
++  let calls = 0;
++  try {
++    const { verifyAdminToken } = loadTs("src/lib/admin-auth.ts", {
++      "@/lib/supabase": { createAuthClient: () => ({ auth: { getUser: async (token) => {
++        calls++;
++        if (token === "error") throw new Error("upstream");
++        return { data: { user: { email: token === "owner" ? "owner@example.test" : "other@example.test" } }, error: token === "expired" ? {} : null };
++      } } }) },
++    });
++    assert.equal(await verifyAdminToken(undefined), null);
++    assert.ok(await verifyAdminToken("owner"));
++    assert.ok(await verifyAdminToken("owner"));
++    assert.equal(await verifyAdminToken("other"), null);
++    assert.equal(await verifyAdminToken("expired"), null);
++    assert.equal(await verifyAdminToken("error"), null);
++    assert.equal(calls, 5);
++  } finally {
++    if (previous === undefined) delete process.env.ADMIN_EMAILS; else process.env.ADMIN_EMAILS = previous;
++  }
++});
++
++test("admin POSTs require a matching origin, including protocol and port", () => {
++  const { isSameOriginAdminPost } = loadTs("src/lib/admin-auth.ts");
++  for (const [origin, fetchSite, allowed] of [
++    ["https://shop.example", "same-origin", true], [null, null, false],
++    ["http://shop.example", "same-origin", false], ["https://shop.example:444", "same-origin", false],
++    ["https://evil.example", "cross-site", false], ["null", null, false],
++    ["https://shop.example", "cross-site", false],
++  ]) {
++    const headers = new Headers();
++    if (origin !== null) headers.set("origin", origin);
++    if (fetchSite !== null) headers.set("sec-fetch-site", fetchSite);
++    assert.equal(isSameOriginAdminPost(new Request("https://shop.example/admin/login/submit", { method: "POST", headers })), allowed);
++  }
++});
++
++test("admin auth clients are isolated anon clients without persisted or refreshed sessions", () => {
++  const configurations = [];
++  const { createAuthClient } = loadTs("src/lib/supabase.ts", {
++    "./env": { requireEnv: (name) => name },
++    "@supabase/supabase-js": { createClient: (...args) => { configurations.push(args); return {}; } },
++  });
++  assert.notEqual(createAuthClient(), createAuthClient());
++  assert.equal(configurations[0][1], "NEXT_PUBLIC_SUPABASE_ANON_KEY");
++  assert.deepEqual(configurations[0][2].auth, { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false });
++});
++
++function loginFixture(authorized = true) {
++  let signins = 0;
++  let verified;
++  const { POST } = loadTs("src/app/admin/login/submit/route.ts", {
++    "@/lib/supabase": { createAuthClient: () => ({ auth: { signInWithPassword: async () => {
++      signins++; return { data: { session: { access_token: "verified-token", expires_at: Math.floor(Date.now() / 1000) + 3600 } }, error: null };
++    } } }) },
++    "@/lib/admin-auth": {
++      ...loadTs("src/lib/admin-auth.ts"),
++      verifyAdminToken: async (token) => { verified = token; return authorized ? { email: "owner@example.test" } : null; },
++    },
++  });
++  const request = (origin = "https://shop.example") => new Request("https://shop.example/admin/login/submit", {
++    method: "POST", headers: { origin }, body: new URLSearchParams({ email: "owner@example.test", password: "secret" }),
++  });
++  return { POST, request, get signins() { return signins; }, get verified() { return verified; } };
++}
++
++test("login rejects cross-site requests before auth and cookies contain only a verified access token", async () => {
++  const f = loginFixture();
++  assert.equal((await f.POST(f.request("https://evil.example"))).status, 403);
++  assert.equal(f.signins, 0);
++  const response = await f.POST(f.request());
++  assert.equal(response.status, 303);
++  assert.equal(f.verified, "verified-token");
++  assert.equal(response.headers.get("location"), "https://shop.example/admin/orders");
++  const cookie = response.headers.get("set-cookie");
++  assert.match(cookie, /verified-token/);
++  assert.match(cookie, /HttpOnly/i);
++  assert.match(cookie, /SameSite=lax/i);
++  assert.match(cookie, /Path=\/admin/i);
++  assert.doesNotMatch(cookie, /refresh/i);
++  const denied = loginFixture(false);
++  const rejected = await denied.POST(denied.request());
++  assert.equal(rejected.status, 303);
++  assert.doesNotMatch(rejected.headers.get("set-cookie") ?? "", /verified-token/);
++  assert.match(rejected.headers.get("location"), /error=invalid/);
++});
++
++test("production cookies are Secure and logout clears only the admin cookie", async () => {
++  const previous = process.env.NODE_ENV;
++  process.env.NODE_ENV = "production";
++  try {
++    const f = loginFixture();
++    assert.match((await f.POST(f.request())).headers.get("set-cookie"), /; Secure/i);
++    let checks = 0;
++    const { POST } = loadTs("src/app/admin/logout/route.ts", {
++      "@/lib/admin-auth": { ...loadTs("src/lib/admin-auth.ts"), requireAdmin: async () => { checks++; } },
++    });
++    const response = await POST(new Request("https://shop.example/admin/logout", { method: "POST", headers: { origin: "https://shop.example" } }));
++    assert.equal(checks, 1);
++    assert.equal(response.status, 303);
++    assert.match(response.headers.get("set-cookie"), /Max-Age=0/i);
++    assert.match(response.headers.get("location"), /\/admin\/login$/);
++  } finally {
++    if (previous === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previous;
++  }
++});
++
++test("orders enforce authorization before service-role access, validate filters and use stable 50-row pagination", async () => {
++  let authorized = false;
++  const calls = [];
++  const builder = {
++    select: (...args) => { calls.push(["select", ...args]); return builder; },
++    eq: (...args) => { calls.push(["eq", ...args]); return builder; },
++    order: (...args) => { calls.push(["order", ...args]); return builder; },
++    range: (...args) => { calls.push(["range", ...args]); return { data: [], error: null, count: 151 }; },
++  };
++  const { getAdminOrders, parseOrderFilters } = loadTs("src/lib/admin-orders.ts", {
++    "@/lib/admin-auth": { requireAdmin: async () => { if (!authorized) throw new Error("redirect login"); } },
++    "@/lib/supabase": { getAdminClient: () => { calls.push(["admin-client"]); return { from: () => builder }; } },
++  });
++  await assert.rejects(getAdminOrders({ status: "paid", page: "2" }), /redirect login/);
++  assert.equal(calls.length, 0);
++  authorized = true;
++  const result = await getAdminOrders({ status: "paid", page: "2" });
++  assert.equal(result.page, 2);
++  assert.ok(calls.some((call) => call[0] === "eq" && call[1] === "status" && call[2] === "paid"));
++  assert.deepEqual(calls.find((call) => call[0] === "range"), ["range", 50, 99]);
++  assert.ok(calls.some((call) => call[0] === "order" && call[1] === "id"));
++  for (const page of ["-1", "1.5", "99999999999999999999999", "NaN"]) {
++    assert.equal(parseOrderFilters({ status: "injected", page }).page, 1);
++    assert.equal(parseOrderFilters({ status: "injected", page }).status, "");
++  }
++});
++
++test("out-of-range order URLs redirect while preserving the status filter", async () => {
++  for (const rangeError of [false, true]) {
++    const query = {};
++    for (const method of ["select", "eq", "order"]) query[method] = () => query;
++    query.range = () => ({ data: [], count: rangeError ? null : 51, error: rangeError ? { code: "PGRST103" } : null });
++    const { getAdminOrders } = loadTs("src/lib/admin-orders.ts", {
++      "@/lib/admin-auth": { requireAdmin: async () => {} },
++      "@/lib/supabase": { getAdminClient: () => ({ from: () => query }) },
++      "next/navigation": { redirect: (url) => { throw new Error(`redirect ${url}`); } },
++    });
++    await assert.rejects(getAdminOrders({ status: "paid", page: "9" }),
++      new RegExp(`redirect /admin/orders\\?status=paid&page=${rangeError ? 1 : 2}`));
++  }
++});

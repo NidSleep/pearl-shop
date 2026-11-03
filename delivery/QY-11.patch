@@ -1,0 +1,386 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -43,7 +43,8 @@
+ 1. **Install**: `npm install`
+ 2. **Supabase**: create a project at https://supabase.com →
+    SQL Editor → run `supabase/migrations/0001_init.sql`, `0002_product_images_bucket.sql`,
+-   and `0003_checkout_rate_limit.sql` (as `postgres`, with `pg_cron` available),
++   `0003_checkout_rate_limit.sql` (as `postgres`, with `pg_cron` available),
++   and `0004_order_shipping.sql`,
+    then `supabase/seed.sql`.
+ 3. **Stripe**: create an account at https://stripe.com, stay in **Test mode**.
+ 4. **Env**: `cp .env.example .env.local` and fill in the keys, including
+@@ -61,6 +62,22 @@
+ 8. **Product photos** (optional): put photos named after each product slug
+    (e.g. `akoya-classic-strand.jpg`) in a folder, then run
+    `npm run images:upload -- path/to/folder`. Re-run to replace a photo.
++
++## Shipping
++
++All prices and shipping fees are in MYR, stored as integer cents.
++Malaysia delivery costs RM10, free when the item subtotal is at least RM300.
++Singapore delivery costs RM25, free when the item subtotal is at least RM500.
++Rules live in `src/lib/shipping.ts`. Checkout calculates eligibility from database
++prices, ignoring browser totals. Customers choose a country in the cart; the hosted
++Stripe session accepts addresses only in that country and offers its single correct
++rate through `shipping_options`. Return to the cart to change destination country.
++
++Apply `0004_order_shipping.sql` **before deploying** the shipping code. It replaces
++the old payment RPC signature while retaining row locking, idempotency, stock updates
++and service-role-only execution. `orders.total_cents` is the item subtotal;
++`shipping_cents` stores delivery, and `amount_paid_cents` stores Stripe's actual total.
++The signed webhook records both payment amounts in the same transaction as payment.
+ 
+ ## Checkout rate limiting
+ 
+diff --git a/src/app/api/checkout/route.ts b/src/app/api/checkout/route.ts
+--- a/src/app/api/checkout/route.ts
++++ b/src/app/api/checkout/route.ts
+@@ -3,6 +3,7 @@
+ import { checkCheckoutRateLimit } from "@/lib/rate-limit";
+ import { getStripe } from "@/lib/stripe";
+ import { getAdminClient } from "@/lib/supabase";
++import { isShippingCountry, SHIPPING_RULES, shippingCents } from "@/lib/shipping";
+ 
+ const MAX_LINE_ITEMS = 20;
+ const MAX_QUANTITY = 10;
+@@ -82,7 +83,12 @@
+     );
+   }
+ 
+-  const items = parseItems(await request.json().catch(() => null));
++  const body: unknown = await request.json().catch(() => null);
++  const country = typeof body === "object" && body !== null && "country" in body ? body.country : null;
++  if (!isShippingCountry(country)) {
++    return NextResponse.json({ error: "Choose Malaysia or Singapore for delivery" }, { status: 400 });
++  }
++  const items = parseItems(body);
+   if (!items) {
+     return NextResponse.json({ error: "Invalid cart" }, { status: 400 });
+   }
+@@ -117,11 +123,12 @@
+   }
+ 
+   const totalCents = lines.reduce((sum, l) => sum + l.product.price_cents * l.quantity, 0);
++  const shipping = shippingCents(country, totalCents);
+ 
+   // 1) Create the pending order
+   const { data: order, error: orderError } = await supabase
+     .from("orders")
+-    .insert({ status: "pending", total_cents: totalCents, currency: "myr" })
++    .insert({ status: "pending", total_cents: totalCents, shipping_cents: shipping, currency: "myr" })
+     .select("id")
+     .single();
+ 
+@@ -160,7 +167,16 @@
+           product_data: { name: l.product.name },
+         },
+       })),
+-      shipping_address_collection: { allowed_countries: ["MY", "SG"] },
++      // Hosted Checkout cannot restrict individual rates by country. Lock the
++      // address country to the cart's validated destination and offer one rate.
++      shipping_address_collection: { allowed_countries: [country] },
++      shipping_options: [{
++        shipping_rate_data: {
++          type: "fixed_amount",
++          fixed_amount: { amount: shipping, currency: "myr" },
++          display_name: shipping === 0 ? "Free shipping" : SHIPPING_RULES[country].displayName,
++        },
++      }],
+       phone_number_collection: { enabled: true },
+       expires_at: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS,
+       success_url: `${siteUrl()}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+diff --git a/src/app/api/webhooks/stripe/route.ts b/src/app/api/webhooks/stripe/route.ts
+--- a/src/app/api/webhooks/stripe/route.ts
++++ b/src/app/api/webhooks/stripe/route.ts
+@@ -64,6 +64,7 @@
+ }
+ 
+ async function markPaid(session: Stripe.Checkout.Session) {
++  if (session.amount_total === null) throw new Error("Paid session has no total");
+   const paymentIntentId =
+     typeof session.payment_intent === "string" ? session.payment_intent : (session.payment_intent?.id ?? null);
+ 
+@@ -73,6 +74,8 @@
+     p_customer_email: session.customer_details?.email ?? null,
+     p_customer_name: session.customer_details?.name ?? null,
+     p_shipping_address: session.collected_information?.shipping_details ?? null,
++    p_shipping_cents: session.shipping_cost?.amount_total ?? 0,
++    p_amount_paid_cents: session.amount_total,
+   });
+ 
+   if (error) throw error;
+diff --git a/src/app/cart/page.tsx b/src/app/cart/page.tsx
+--- a/src/app/cart/page.tsx
++++ b/src/app/cart/page.tsx
+@@ -4,11 +4,13 @@
+ import { useState } from "react";
+ import { MAX_QUANTITY_PER_ITEM, useCart } from "@/lib/cart";
+ import { formatPrice } from "@/lib/money";
++import { SHIPPING_RULES, shippingCents, type ShippingCountry } from "@/lib/shipping";
+ 
+ export default function CartPage() {
+   const { items, ready, subtotalCents, setQuantity, removeItem } = useCart();
+   const [loading, setLoading] = useState(false);
+   const [error, setError] = useState<string | null>(null);
++  const [country, setCountry] = useState<ShippingCountry>("MY");
+ 
+   async function checkout() {
+     setLoading(true);
+@@ -17,8 +19,9 @@
+       const res = await fetch("/api/checkout", {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+-        // Only send IDs and quantities. The server looks up real prices.
++        // The server validates the destination and looks up real prices.
+         body: JSON.stringify({
++          country,
+           items: items.map((i) => ({ productId: i.productId, quantity: i.quantity })),
+         }),
+       });
+@@ -80,7 +83,23 @@
+         <span>Subtotal</span>
+         <span>{formatPrice(subtotalCents)}</span>
+       </div>
+-      <p className="text-sm text-stone-500">Shipping and final total are confirmed on the payment page.</p>
++      <div className="space-y-3">
++        <label htmlFor="shipping-country" className="block text-sm font-medium">Deliver to</label>
++        <select id="shipping-country" value={country} disabled={loading}
++          onChange={(event) => setCountry(event.target.value as ShippingCountry)}
++          className="w-full rounded border border-stone-300 bg-white px-3 py-2">
++          {Object.entries(SHIPPING_RULES).map(([code, rule]) => (
++            <option key={code} value={code}>{rule.countryName}</option>
++          ))}
++        </select>
++        <div className="flex justify-between text-sm">
++          <span>Estimated shipping</span><span>{formatPrice(shippingCents(country, subtotalCents))}</span>
++        </div>
++        <p className="text-sm text-stone-500">
++          {formatPrice(SHIPPING_RULES[country].feeCents)} flat; free on item subtotals of {formatPrice(SHIPPING_RULES[country].freeFromCents)} or more.
++          {" "}Final prices and shipping are confirmed on the payment page. To change country, return to your cart.
++        </p>
++      </div>
+       {error && <p className="text-sm text-rose-700">{error}</p>}
+       <button
+         onClick={checkout}
+diff --git a/src/lib/shipping.ts b/src/lib/shipping.ts
+new file mode 100644
+--- /dev/null
++++ b/src/lib/shipping.ts
+@@ -0,0 +1,16 @@
++// Shared display rules; checkout always applies these to the DB subtotal.
++export const SHIPPING_RULES = {
++  MY: { countryName: "Malaysia", displayName: "Malaysia standard", feeCents: 1_000, freeFromCents: 30_000 },
++  SG: { countryName: "Singapore", displayName: "Singapore standard", feeCents: 2_500, freeFromCents: 50_000 },
++} as const;
++
++export type ShippingCountry = keyof typeof SHIPPING_RULES;
++
++export function isShippingCountry(value: unknown): value is ShippingCountry {
++  return value === "MY" || value === "SG";
++}
++
++export function shippingCents(country: ShippingCountry, subtotalCents: number): number {
++  const rule = SHIPPING_RULES[country];
++  return subtotalCents >= rule.freeFromCents ? 0 : rule.feeCents;
++}
+diff --git a/supabase/migrations/0004_order_shipping.sql b/supabase/migrations/0004_order_shipping.sql
+new file mode 100644
+--- /dev/null
++++ b/supabase/migrations/0004_order_shipping.sql
+@@ -0,0 +1,68 @@
++begin;
++
++alter table public.orders
++  add column shipping_cents integer not null default 0 check (shipping_cents >= 0),
++  add column amount_paid_cents integer check (amount_paid_cents >= 0);
++
++-- Existing paid orders predate shipping fees. total_cents remains the item subtotal.
++update public.orders set amount_paid_cents = total_cents where status = 'paid';
++
++-- Replace the old signature, rather than leaving an unsafe callable overload.
++drop function public.mark_order_paid(text, text, text, text, jsonb);
++create or replace function public.mark_order_paid(
++  p_session_id        text,
++  p_payment_intent_id text,
++  p_customer_email    text,
++  p_customer_name     text,
++  p_shipping_address jsonb,
++  p_shipping_cents    integer,
++  p_amount_paid_cents integer
++)
++returns text
++language plpgsql
++security invoker
++set search_path = public
++as $$
++declare
++  v_order orders%rowtype;
++  v_item  order_items%rowtype;
++  v_short boolean := false;
++begin
++  select * into v_order from orders
++  where stripe_session_id = p_session_id for update;
++
++  if not found then return 'not_found'; end if;
++  if v_order.status = 'paid' then return 'already_paid'; end if;
++  if v_order.status not in ('pending', 'failed') then return v_order.status::text; end if;
++
++  if p_shipping_cents is null or p_shipping_cents < 0
++     or p_amount_paid_cents is null or p_amount_paid_cents < p_shipping_cents then
++    raise exception 'Invalid payment amounts';
++  end if;
++
++  for v_item in select * from order_items where order_id = v_order.id loop
++    update products set stock = stock - v_item.quantity
++    where id = v_item.product_id and stock >= v_item.quantity;
++    if not found then v_short := true; end if;
++  end loop;
++
++  update orders
++  set status = 'paid',
++      paid_at = now(),
++      stripe_payment_intent_id = p_payment_intent_id,
++      customer_email = p_customer_email,
++      customer_name = p_customer_name,
++      shipping_address = p_shipping_address,
++      shipping_cents = p_shipping_cents,
++      amount_paid_cents = p_amount_paid_cents,
++      needs_attention = v_short
++  where id = v_order.id;
++
++  return 'paid';
++end;
++$$;
++
++revoke execute on function public.mark_order_paid(text, text, text, text, jsonb, integer, integer) from public, anon, authenticated;
++grant execute on function public.mark_order_paid(text, text, text, text, jsonb, integer, integer) to service_role;
++
++commit;
+diff --git a/tests/load-ts.mjs b/tests/load-ts.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/load-ts.mjs
+@@ -0,0 +1,31 @@
++import { readFileSync } from "node:fs";
++import { createRequire } from "node:module";
++import { dirname, resolve } from "node:path";
++import ts from "typescript";
++
++const require = createRequire(import.meta.url);
++
++// Use the installed compiler, with explicit service mocks: these tests never
++// read .env.local or call Supabase, Stripe or Resend.
++export function loadTs(filename, mocks = {}) {
++  const cache = new Map();
++  function load(path) {
++    path = resolve(path);
++    if (cache.has(path)) return cache.get(path).exports;
++    const compiledModule = { exports: {} };
++    cache.set(path, compiledModule);
++    const source = ts.transpileModule(readFileSync(path, "utf8"), {
++      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true, jsx: ts.JsxEmit.ReactJSX },
++    }).outputText;
++    const localRequire = (name) => {
++      if (Object.hasOwn(mocks, name)) return mocks[name];
++      if (name === "server-only") return {};
++      if (name.startsWith("@/")) return load(resolve("src", name.slice(2)) + ".ts");
++      if (name.startsWith(".")) return load(resolve(dirname(path), name) + ".ts");
++      return require(name);
++    };
++    new Function("require", "module", "exports", source)(localRequire, compiledModule, compiledModule.exports);
++    return compiledModule.exports;
++  }
++  return load(filename);
++}
+diff --git a/tests/shipping.test.mjs b/tests/shipping.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/shipping.test.mjs
+@@ -0,0 +1,85 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { loadTs } from "./load-ts.mjs";
++
++test("MY and SG charge flat fees below their exact free-shipping thresholds", () => {
++  const { shippingCents } = loadTs("src/lib/shipping.ts");
++  assert.equal(shippingCents("MY", 29_999), 1_000);
++  assert.equal(shippingCents("MY", 30_000), 0);
++  assert.equal(shippingCents("MY", 50_000), 0);
++  assert.equal(shippingCents("SG", 30_000), 2_500);
++  assert.equal(shippingCents("SG", 49_999), 2_500);
++  assert.equal(shippingCents("SG", 50_000), 0);
++});
++
++function checkoutFixture() {
++  const sessions = [];
++  let writes = 0;
++  const builder = (data) => {
++    const query = { data, error: null };
++    for (const method of ["select", "in", "eq", "single"]) query[method] = () => query;
++    return query;
++  };
++  const db = { from: (table) => ({
++    select: () => builder([{ id: "a".repeat(36), name: "Pearl", price_cents: 15_000, currency: "myr", stock: 10 }]),
++    insert: () => { writes++; return builder(table === "orders" ? { id: "order-1" } : null); },
++    update: () => builder(null),
++  }) };
++  const { POST } = loadTs("src/app/api/checkout/route.ts", {
++    "@/lib/rate-limit": { checkCheckoutRateLimit: async () => ({ ok: true }) },
++    "@/lib/supabase": { getAdminClient: () => db },
++    "@/lib/env": { siteUrl: () => "https://shop.example" },
++    "@/lib/stripe": { getStripe: () => ({ checkout: { sessions: { create: async (session) => {
++      sessions.push(session); return { id: "cs_test", url: "https://checkout.example" };
++    } } } }) },
++  });
++  const request = (country) => new Request("https://shop.example/api/checkout", {
++    method: "POST", headers: { "content-type": "application/json" },
++    body: JSON.stringify({ country, subtotalCents: 999_999, items: [{ productId: "a".repeat(36), quantity: 2 }] }),
++  });
++  return { POST, request, sessions, writes: () => writes };
++}
++
++test("checkout calculates shipping from DB prices and locks the address country", async () => {
++  for (const [country, fee] of [["MY", 0], ["SG", 2_500]]) {
++    const f = checkoutFixture();
++    assert.equal((await f.POST(f.request(country))).status, 200);
++    const session = f.sessions[0];
++    assert.deepEqual(session.shipping_address_collection.allowed_countries, [country]);
++    assert.equal(session.shipping_options.length, 1);
++    assert.equal(session.shipping_options[0].shipping_rate_data.fixed_amount.amount, fee);
++    assert.equal(session.shipping_options[0].shipping_rate_data.fixed_amount.currency, "myr");
++    assert.equal(Object.hasOwn(session, "payment_method_types"), false);
++  }
++});
++
++test("checkout rejects unsupported or missing country before writing orders", async () => {
++  for (const country of ["US", "__proto__", undefined]) {
++    const f = checkoutFixture();
++    assert.equal((await f.POST(f.request(country))).status, 400);
++    assert.equal(f.writes(), 0);
++    assert.equal(f.sessions.length, 0);
++  }
++});
++
++test("paid webhook passes signed Stripe shipping and total into the payment transaction", async () => {
++  let args;
++  const { POST } = loadTs("src/app/api/webhooks/stripe/route.ts", {
++    "@/lib/env": { requireEnv: () => "test" },
++    "@/lib/stripe": { getStripe: () => ({ webhooks: { constructEvent: () => ({
++      type: "checkout.session.completed", data: { object: {
++        id: "cs_test", payment_status: "paid", shipping_cost: { amount_total: 2_500 }, amount_total: 32_500,
++      } },
++    }) } }) },
++    "@/lib/supabase": { getAdminClient: () => ({ rpc: async (_name, params) => {
++      args = params; return { data: "paid", error: null };
++    } }) },
++    "@/lib/email": { sendOrderConfirmation: async () => {} },
++  });
++  const response = await POST(new Request("https://shop.example/api/webhooks/stripe", {
++    method: "POST", headers: { "stripe-signature": "test" }, body: "signed fixture",
++  }));
++  assert.equal(response.status, 200);
++  assert.equal(args.p_shipping_cents, 2_500);
++  assert.equal(args.p_amount_paid_cents, 32_500);
++});

@@ -1,0 +1,49 @@
+{
+  "base": "8ff4f3edfaa6eaaee1a08f3d8667d428ab07c829",
+  "branch": "erqingyap0047/client-ready-qy-9-10-11",
+  "issues": [
+    {
+      "id": "QY-11",
+      "message": "QY-11: calculate country-specific shipping and persist Stripe totals",
+      "files": [
+        "README.md",
+        "src/app/api/checkout/route.ts",
+        "src/app/api/webhooks/stripe/route.ts",
+        "src/app/cart/page.tsx",
+        "src/lib/shipping.ts",
+        "supabase/migrations/0004_order_shipping.sql",
+        "tests/load-ts.mjs",
+        "tests/shipping.test.mjs"
+      ]
+    },
+    {
+      "id": "QY-9",
+      "message": "QY-9: send atomic, retryable order confirmation emails",
+      "files": [
+        ".env.example",
+        "README.md",
+        "src/app/api/webhooks/stripe/route.ts",
+        "src/lib/email.ts",
+        "supabase/migrations/0005_order_email.sql",
+        "tests/email.test.mjs"
+      ]
+    },
+    {
+      "id": "QY-10",
+      "message": "QY-10: add authenticated admin order management",
+      "files": [
+        ".env.example",
+        "README.md",
+        "src/lib/supabase.ts",
+        "src/lib/admin-auth.ts",
+        "src/lib/admin-orders.ts",
+        "src/app/admin/layout.tsx",
+        "src/app/admin/login/page.tsx",
+        "src/app/admin/login/submit/route.ts",
+        "src/app/admin/logout/route.ts",
+        "src/app/admin/orders/page.tsx",
+        "tests/admin.test.mjs"
+      ]
+    }
+  ]
+}
