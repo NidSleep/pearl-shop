@@ -1,12 +1,16 @@
 import Link from "next/link";
 import { CartLink } from "./CartLink";
+import { SHIPPING_RULES } from "@/lib/shipping";
+import { formatPrice } from "@/lib/money";
 
 export function Header() {
   return (
-    <header className="site-header sticky top-0 z-30">
+    <>
+    <div className="announcement">Complimentary shipping from {formatPrice(SHIPPING_RULES.MY.freeFromCents)} in MY <span aria-hidden="true">·</span> {formatPrice(SHIPPING_RULES.SG.freeFromCents)} in SG</div>
+    <header className="site-header">
       <div className="site-container header-inner">
         <Link href="/" className="wordmark" aria-label="Pearl Shop home">
-          Pearl Shop<span className="wordmark-dot" aria-hidden="true" />
+          Pearl Shop
         </Link>
         <nav aria-label="Main navigation" className="header-nav">
           <Link href="/#collection" className="nav-link">
@@ -18,5 +22,6 @@ export function Header() {
         </nav>
       </div>
     </header>
+    </>
   );
 }

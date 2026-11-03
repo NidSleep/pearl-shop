@@ -53,7 +53,7 @@ export default function CartPage() {
   }
 
   return (
-    <div>
+    <div className="cart-page">
       <div className="collection-heading mb-8">
         <div><h1 className="page-title">Your cart</h1><p className="mt-3">A few beautiful choices, all in one place.</p></div>
         <Link href="/#collection" className="text-link"><Icon name="back" className="size-4" /> Continue shopping</Link>
@@ -63,7 +63,7 @@ export default function CartPage() {
         {items.map((item) => (
           <li key={item.productId} className="cart-item">
             <Link href={`/products/${item.slug}`} className="cart-thumbnail relative block w-full aspect-square overflow-hidden" tabIndex={-1} aria-hidden="true">
-              <PearlImage src={item.imageUrl} alt="" sizes="100px" />
+              <PearlImage src={item.imageUrl} alt="" sizes="(max-width: 767px) 96px, (max-width: 1023px) 100px, 136px" />
             </Link>
             <div className="min-w-0">
               <div className="cart-item-heading">

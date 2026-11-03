@@ -45,10 +45,11 @@ export default async function ProductPage({ params }: PageProps<"/products/[slug
       </Link>
       <div className="product-layout">
         <div className="product-detail-stage"><div className="product-detail-image relative w-full aspect-square overflow-hidden">
-          <PearlImage src={product.image_url} alt={product.name} sizes="(max-width: 767px) 100vw, 55vw" preload />
+          <PearlImage src={product.image_url} alt={product.name} sizes="(max-width: 767px) 100vw, 60vw" preload />
         </div><p className="product-image-caption">{PEARL_TYPE_LABELS[product.pearl_type]}<span>Pearl Shop</span></p></div>
         <div className="product-details space-y-7">
           <div className="space-y-4">
+            <p className="eyebrow">{PEARL_TYPE_LABELS[product.pearl_type]} pearls</p>
             <h1 className="page-title">{product.name}</h1>
             <p className="text-2xl tabular-nums">{formatPrice(product.price_cents, product.currency)}</p>
             <p className="flex items-center gap-2 text-xs text-muted">{product.stock === 0 ? "Currently sold out" : <><Icon name="check" className="size-4" /> Available to order</>}</p>
@@ -71,6 +72,7 @@ export default async function ProductPage({ params }: PageProps<"/products/[slug
           <div className="shipping-note space-y-3 border-t border-stone-200 pt-5">
             <p className="flex items-start gap-3"><Icon name="truck" /><span>Delivery to Malaysia & Singapore.<br />Free shipping from {formatPrice(SHIPPING_RULES.MY.freeFromCents)} (MY) or {formatPrice(SHIPPING_RULES.SG.freeFromCents)} (SG). Shipping is confirmed at checkout.</span></p>
             <p className="flex items-center gap-3"><Icon name="lock" /> Secure checkout via Stripe, in MYR.</p>
+            <p className="flex items-center gap-3"><Icon name="gift" /> Gift-ready packaging, for you or someone special.</p>
             <Link href="/#pearl-care" className="text-link">How to care for your pearls <Icon name="arrow" className="size-4" /></Link>
           </div>
         </div>
