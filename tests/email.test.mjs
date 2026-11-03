@@ -11,36 +11,48 @@ const order = {
   order_items: [{ product_name: "<script>bad</script>", quantity: 2, unit_price_cents: 15_000 }],
 };
 
-function emailFixture({ configured = true, fail = false, dbError = false } = {}) {
+function emailFixture({ configured = true, fail = false, dbError = false, lostClaim = false, finishError = false, timeout = false } = {}) {
   let claim = null;
+  let sentAt = null;
+  let now = Date.parse("2026-11-03T00:00:00Z");
   let posts = 0;
   let updates = 0;
   let payload;
   let headers;
-  const db = { from: () => {
-    let change;
-    let matchesNull = false;
-    let ownedClaim;
+  const failure = () => ({ data: null, error: new Error("private upstream detail") });
+  const db = { from: (table) => {
+    assert.equal(table, "orders");
+    const filters = {};
     const query = {
-      update(value) { updates++; change = value; return query; },
-      eq(key, value) { if (key === "confirmation_email_sent_at") ownedClaim = value; return query; },
-      is() { matchesNull = true; return query; },
+      eq(key, value) { filters[key] = value; return query; },
+      is(key, value) { filters[key] = value; return query; },
       select() { return query; },
       async maybeSingle() {
-        if (dbError) return { data: null, error: new Error("private upstream detail") };
-        if (change) {
-          if (matchesNull && claim !== null) return { data: null, error: null };
-          claim = change.confirmation_email_sent_at;
-        }
-        return { data: order, error: null };
-      },
-      then(resolve) {
-        if (ownedClaim === claim) claim = change.confirmation_email_sent_at;
-        return Promise.resolve({ error: null }).then(resolve);
+        assert.deepEqual(filters, { stripe_session_id: "cs_test", status: "paid", confirmation_email_sent_at: null });
+        if (dbError) return failure();
+        return { data: sentAt ? null : order, error: null };
       },
     };
     return query;
-  } };
+  }, rpc: (name, args) => ({
+    async maybeSingle() {
+      assert.equal(args.p_order_id, order.id);
+      if (name === "claim_order_confirmation") {
+        if (sentAt || (claim && Date.parse(claim) >= now - 15 * 60_000)) return { data: null, error: null };
+        updates++;
+        claim = new Date(now).toISOString();
+        if (lostClaim) { lostClaim = false; return failure(); }
+        return { data: { id: order.id, confirmation_email_claimed_at: claim }, error: null };
+      }
+      assert.equal(name, "finish_order_confirmation");
+      if (finishError) { finishError = false; return failure(); }
+      if (sentAt || args.p_claimed_at !== claim) return { data: null, error: null };
+      updates++;
+      if (args.p_sent) sentAt = new Date(now).toISOString();
+      claim = null;
+      return { data: { id: order.id }, error: null };
+    },
+  }) };
   const { sendOrderConfirmation } = loadTs("src/lib/email.ts", {
     "@/lib/supabase": { getAdminClient: () => db },
   });
@@ -55,7 +67,10 @@ function emailFixture({ configured = true, fail = false, dbError = false } = {})
         process.env.EMAIL_FROM = "Shop <orders@example.test>";
         globalThis.fetch = async (url, init) => {
           assert.equal(url, "https://api.resend.com/emails");
+          assert.ok(claim, "email must have an active lease before sending");
+          assert.equal(sentAt, null, "email must not be marked sent before provider success");
           posts++; payload = JSON.parse(init.body); headers = init.headers;
+          if (timeout) throw new Error("ambiguous timeout");
           return new Response("{}", { status: fail ? 503 : 200 });
         };
         return await run(() => sendOrderConfirmation("cs_test"));
@@ -65,18 +80,22 @@ function emailFixture({ configured = true, fail = false, dbError = false } = {})
         globalThis.fetch = oldFetch;
       }
     },
-    get claim() { return claim; }, get posts() { return posts; }, get updates() { return updates; },
+    get claim() { return claim; }, get sentAt() { return sentAt; }, get posts() { return posts; }, get updates() { return updates; },
     get payload() { return payload; }, get headers() { return headers; },
-    recover() { fail = false; },
+    recover() { fail = false; timeout = false; },
+    advance(minutes) { now += minutes * 60_000; },
   };
 }
 
 test("atomic claim deduplicates repeated and concurrent deliveries", async () => {
   const f = emailFixture();
-  await f.send((send) => Promise.all([send(), send()]));
+  const results = await f.send((send) => Promise.allSettled([send(), send()]));
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected").length, 1);
   await f.send();
   assert.equal(f.posts, 1);
-  assert.ok(f.claim);
+  assert.equal(f.claim, null);
+  assert.ok(f.sentAt);
 });
 
 test("confirmation escapes HTML and includes snapshots, shipping, paid total and address in both formats", async () => {
@@ -94,17 +113,72 @@ test("confirmation escapes HTML and includes snapshots, shipping, paid total and
     assert.match(content, /123456/);
     assert.match(content, /2/);
   }
-  assert.equal(f.headers["Idempotency-Key"], "order-confirmation/12345678-abcd");
+  assert.equal(f.headers["Idempotency-Key"], "order-confirmation-12345678-abcd");
 });
 
 test("Resend failure clears the owned claim and a later attempt can send", async () => {
   const f = emailFixture({ fail: true });
   await assert.rejects(f.send(), /confirmation email/i);
   assert.equal(f.claim, null);
+  assert.equal(f.sentAt, null);
   f.recover();
   await f.send();
   assert.equal(f.posts, 2);
+  assert.ok(f.sentAt);
+});
+
+test("lost claim response stays retryable and can be reclaimed only after 15 minutes", async () => {
+  const f = emailFixture({ lostClaim: true });
+  await assert.rejects(f.send(), /confirmation email/i);
   assert.ok(f.claim);
+  assert.equal(f.sentAt, null);
+  f.advance(15);
+  await assert.rejects(f.send(), /confirmation email/i);
+  assert.equal(f.posts, 0);
+  f.advance(1);
+  await f.send();
+  assert.equal(f.posts, 1);
+  assert.ok(f.sentAt);
+});
+
+test("ambiguous provider timeout releases the lease and retries with the same idempotency key", async () => {
+  const f = emailFixture({ timeout: true });
+  await assert.rejects(f.send(), /confirmation email/i);
+  const key = f.headers["Idempotency-Key"];
+  assert.equal(f.claim, null);
+  assert.equal(f.sentAt, null);
+  f.recover();
+  await f.send();
+  assert.equal(f.headers["Idempotency-Key"], key);
+  assert.ok(f.sentAt);
+});
+
+test("failure to record provider success retains the lease for later recovery", async () => {
+  const f = emailFixture({ finishError: true });
+  await assert.rejects(f.send(), /confirmation email/i);
+  assert.equal(f.posts, 1);
+  assert.equal(f.sentAt, null);
+  assert.ok(f.claim);
+  await assert.rejects(f.send(), /confirmation email/i);
+  assert.equal(f.posts, 1);
+  f.advance(16);
+  await f.send();
+  assert.equal(f.posts, 2);
+  assert.ok(f.sentAt);
+});
+
+test("failed claim release recovers through lease expiry", async () => {
+  const f = emailFixture({ fail: true, finishError: true });
+  await assert.rejects(f.send(), /confirmation email/i);
+  assert.equal(f.sentAt, null);
+  assert.ok(f.claim);
+  f.recover();
+  await assert.rejects(f.send(), /confirmation email/i);
+  assert.equal(f.posts, 1);
+  f.advance(16);
+  await f.send();
+  assert.equal(f.posts, 2);
+  assert.ok(f.sentAt);
 });
 
 test("missing API key skips the claim and DB errors fail safely", async () => {

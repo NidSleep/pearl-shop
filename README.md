@@ -74,8 +74,11 @@ Stripe session accepts addresses only in that country and offers its single corr
 rate through `shipping_options`. Return to the cart to change destination country.
 
 Apply `0004_order_shipping.sql` **before deploying** the shipping code. It replaces
-the old payment RPC signature while retaining row locking, idempotency, stock updates
-and service-role-only execution. `orders.total_cents` is the item subtotal;
+the old payment RPC signature in one transaction, leaving one overload with optional
+shipping/amount arguments. The deployed webhook's five named arguments still work,
+defaulting to zero shipping and the stored item subtotal as the paid amount. It retains
+row locking, idempotency, stock updates and service-role-only execution.
+`orders.total_cents` is the item subtotal;
 `shipping_cents` stores delivery, and `amount_paid_cents` stores Stripe's actual total.
 The signed webhook records both payment amounts in the same transaction as payment.
 
@@ -87,18 +90,24 @@ If either is missing, the webhook warns and skips email without failing payment.
 No email SDK is required; `src/lib/email.ts` uses the Resend HTTP API.
 
 Only the signed payment webhook initiates confirmations, after `mark_order_paid`
-returns `paid` or `already_paid`. A conditional update claims the paid order by
-setting `confirmation_email_sent_at` only when null. Only the claimer sends;
-successful sends keep the timestamp. A failed send releases its own claim and
-returns HTTP 500 so Stripe retries. A stable Resend idempotency key also protects
-against ambiguous HTTP failures within Resend's 24-hour deduplication window.
+returns `paid` or `already_paid`. A database RPC atomically claims an unsent paid
+order by setting `confirmation_email_claimed_at` with a 15-minute lease. Only the
+claimer sends; `confirmation_email_sent_at` is set to the database time only after
+Resend returns success. A failed send releases its own claim and returns HTTP 500
+so Stripe retries. Completion and release check the claim timestamp so an expired
+worker cannot overwrite a newer claim. A stable Resend `Idempotency-Key` of
+`order-confirmation-<order id>` protects ambiguous HTTP failures within Resend's
+24-hour idempotency window.
 HTML escapes all order/address data; logs exclude recipients and email content.
 
-The timestamp is a claim, not proof of delivery. If the process terminates after
-claiming, or releasing a failed claim fails, inspect the email provider before
-manually clearing it and replaying the Stripe event. No HTTP provider plus database
-can guarantee exactly-once delivery across every crash. If email was disabled,
-configure it and replay a paid event to send an unsent confirmation.
+If the claim response is lost, the process terminates, or releasing a failed claim
+fails, the lease expires so a later Stripe retry can claim again. A held lease
+returns HTTP 500 to keep retries active. If Stripe has stopped retrying, replay a
+paid event after the lease expires. The sent timestamp records provider acceptance,
+not inbox delivery. Accepted trade-off: an ambiguous timeout retried after Resend's
+24-hour idempotency window could produce a rare duplicate email. No HTTP provider
+plus database can guarantee exactly-once delivery across every crash. If email was
+disabled, configure it and replay a paid event to send an unsent confirmation.
 
 ## Admin orders
 

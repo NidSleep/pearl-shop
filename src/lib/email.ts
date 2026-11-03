@@ -66,20 +66,27 @@ export async function sendOrderConfirmation(sessionId: string): Promise<void> {
   }
 
   const supabase = getAdminClient();
-  const claimedAt = new Date().toISOString();
-  // The conditional UPDATE is one atomic DB operation. Concurrent deliveries
-  // cannot both claim the same paid order; no read-then-write race.
   const { data, error } = await supabase.from("orders")
-    .update({ confirmation_email_sent_at: claimedAt })
+    .select("id, customer_email, currency, shipping_cents, amount_paid_cents, shipping_address, order_items(product_name, quantity, unit_price_cents)")
     .eq("stripe_session_id", sessionId)
     .eq("status", "paid")
     .is("confirmation_email_sent_at", null)
-    .select("id, customer_email, currency, shipping_cents, amount_paid_cents, shipping_address, order_items(product_name, quantity, unit_price_cents)")
     .maybeSingle();
 
-  if (error) throw new Error("Confirmation email claim failed");
+  if (error) throw new Error("Confirmation email lookup failed");
   if (!data) return;
   const order = data as ConfirmationOrder;
+
+  // The RPC atomically claims an unsent order using a 15-minute DB-timed lease.
+  // Its timestamp guards completion/release against a newer worker's claim.
+  const { data: claim, error: claimError } = await supabase.rpc("claim_order_confirmation", {
+    p_order_id: order.id,
+  }).maybeSingle<{ id: string; confirmation_email_claimed_at: string }>();
+  if (claimError) throw new Error("Confirmation email claim failed");
+  // Keep Stripe retrying while a claim is held, including when a previous claim
+  // response was lost. Acknowledging here would stop retries before lease expiry.
+  if (!claim) throw new Error("Confirmation email claim unavailable; retry later");
+  const claimedAt = claim.confirmation_email_claimed_at;
 
   try {
     if (!order.customer_email) throw new Error("Missing recipient");
@@ -88,8 +95,9 @@ export async function sendOrderConfirmation(sessionId: string): Promise<void> {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
-        // Also deduplicate ambiguous HTTP failures at the provider (24h window).
-        "Idempotency-Key": `order-confirmation/${order.id}`,
+        // Accepted trade-off: an ambiguous timeout retried after Resend's 24h
+        // idempotency window can produce a rare duplicate confirmation email.
+        "Idempotency-Key": `order-confirmation-${order.id}`,
       },
       body: JSON.stringify({ from, to: [order.customer_email], ...confirmationContent(order) }),
       signal: AbortSignal.timeout(10_000),
@@ -98,11 +106,17 @@ export async function sendOrderConfirmation(sessionId: string): Promise<void> {
   } catch {
     // Never log addresses, payloads, provider responses or upstream errors.
     console.error("confirmation email: send failed; releasing claim for Stripe retry");
-    const { error: releaseError } = await supabase.from("orders")
-      .update({ confirmation_email_sent_at: null })
-      .eq("id", order.id)
-      .eq("confirmation_email_sent_at", claimedAt);
-    if (releaseError) console.error("confirmation email: claim release failed; manual recovery required");
+    const { error: releaseError } = await supabase.rpc("finish_order_confirmation", {
+      p_order_id: order.id, p_claimed_at: claimedAt, p_sent: false,
+    }).maybeSingle();
+    if (releaseError) console.error("confirmation email: claim release failed; lease will expire");
     throw new Error("Confirmation email failed");
   }
+
+  // Only provider success records sent_at = now() in the DB. If this response
+  // fails, retain the lease and retry later with the same Resend idempotency key.
+  const { data: completed, error: completionError } = await supabase.rpc("finish_order_confirmation", {
+    p_order_id: order.id, p_claimed_at: claimedAt, p_sent: true,
+  }).maybeSingle();
+  if (completionError || !completed) throw new Error("Confirmation email completion failed");
 }
