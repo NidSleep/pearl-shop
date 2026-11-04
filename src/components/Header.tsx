@@ -1,20 +1,31 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 import { CartLink } from "./CartLink";
+import { Icon } from "./Icon";
+import { SHIPPING_RULES } from "@/lib/shipping";
+import { formatPrice } from "@/lib/money";
+
+const navigation = [
+  ["All pearls", "/#collection"],
+  ["Akoya", "/?type=akoya#collection"],
+  ["Freshwater", "/?type=freshwater#collection"],
+  ["South Sea", "/?type=south_sea#collection"],
+  ["Tahitian", "/?type=tahitian#collection"],
+  ["Pearl care", "/#pearl-care"],
+] as const;
 
 export function Header() {
   return (
-    <header className="border-b border-stone-200 bg-white/80 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-        <Link href="/" className="font-serif text-2xl tracking-wide text-stone-900">
-          Pearl Shop
-        </Link>
-        <nav className="flex items-center gap-6 text-sm text-stone-600">
-          <Link href="/" className="hover:text-stone-900">
-            Shop
-          </Link>
+    <>
+      <div className="announcement">Complimentary shipping from {formatPrice(SHIPPING_RULES.MY.freeFromCents)} in Malaysia <span aria-hidden="true">·</span> {formatPrice(SHIPPING_RULES.SG.freeFromCents)} in Singapore</div>
+      <header className="site-header">
+        <div className="site-container header-inner">
+          <Link href="/#collection-search" className="header-search" aria-label="Find your pearl — filter the collection by type and price"><Icon name="search" /><span>Find your pearl</span></Link>
+          <Link href="/" className="wordmark" aria-label="Pearl Shop home">PEARL SHOP</Link>
           <CartLink />
-        </nav>
-      </div>
-    </header>
+        </div>
+        <nav aria-label="Main navigation" className="site-container header-nav">{navigation.map(([label, href]) => <Link key={label} href={href} className="nav-link">{label}</Link>)}</nav>
+      </header>
+    </>
   );
 }
+

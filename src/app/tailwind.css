@@ -1,0 +1,15 @@
+﻿@import "tailwindcss" source("../");
+
+@theme inline {
+  --font-sans: var(--font-ui);
+  --font-serif: var(--font-display);
+}
+
+/* These tokens are also read by application CSS, so always emit them. */
+@theme static {
+  --color-ivory: #ffffff;
+  --color-ink: #171717;
+  --color-muted: #626262;
+  --color-champagne: #474747;
+}
+

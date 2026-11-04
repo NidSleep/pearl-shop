@@ -7,7 +7,8 @@ const nextConfig: NextConfig = {
   },
   turbopack: {
     rules: {
-      "*.css": {
+      // Only compile the Tailwind entry; leave application and font CSS native.
+      "tailwind.css": {
         loaders: ["@tailwindcss/turbopack"],
         as: "*.css",
       },

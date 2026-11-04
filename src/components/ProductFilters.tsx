@@ -2,8 +2,7 @@ import Link from "next/link";
 import { hasActiveFilters, type ProductFilters as Filters } from "@/lib/products";
 import { PEARL_TYPE_LABELS, type PearlType } from "@/lib/types";
 
-const fieldClass =
-  "rounded-md border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 focus:border-stone-500 focus:outline-none";
+const fieldClass = "field";
 
 /**
  * Plain GET form: submitting it updates the URL (?type=…&min=…&max=…),
@@ -13,8 +12,8 @@ export function ProductFilters({ filters }: { filters: Filters }) {
   const isFiltered = hasActiveFilters(filters);
 
   return (
-    <form method="get" action="/" className="flex flex-wrap items-end justify-center gap-3">
-      <label className="flex flex-col gap-1 text-xs uppercase tracking-widest text-stone-500">
+    <form method="get" action="/#collection" className="filter-bar" aria-label="Filter the collection">
+      <label className="field-label filter-type">
         Pearl type
         <select name="type" defaultValue={filters.type ?? ""} className={fieldClass}>
           <option value="">All types</option>
@@ -26,8 +25,8 @@ export function ProductFilters({ filters }: { filters: Filters }) {
         </select>
       </label>
 
-      <label className="flex flex-col gap-1 text-xs uppercase tracking-widest text-stone-500">
-        Min (RM)
+      <label className="field-label">
+        Min price (RM)
         <input
           type="number"
           name="min"
@@ -36,12 +35,12 @@ export function ProductFilters({ filters }: { filters: Filters }) {
           inputMode="numeric"
           placeholder="0"
           defaultValue={filters.minCents !== undefined ? filters.minCents / 100 : ""}
-          className={`${fieldClass} w-28`}
+          className={fieldClass}
         />
       </label>
 
-      <label className="flex flex-col gap-1 text-xs uppercase tracking-widest text-stone-500">
-        Max (RM)
+      <label className="field-label">
+        Max price (RM)
         <input
           type="number"
           name="max"
@@ -50,20 +49,20 @@ export function ProductFilters({ filters }: { filters: Filters }) {
           inputMode="numeric"
           placeholder="Any"
           defaultValue={filters.maxCents !== undefined ? filters.maxCents / 100 : ""}
-          className={`${fieldClass} w-28`}
+          className={fieldClass}
         />
       </label>
 
       <button
         type="submit"
-        className="rounded-md bg-stone-900 px-4 py-2 text-sm text-white hover:bg-stone-700"
+        className="button"
       >
-        Apply
+        Apply filters
       </button>
 
       {isFiltered && (
-        <Link href="/" className="px-2 py-2 text-sm text-stone-500 underline hover:text-stone-900">
-          Clear
+        <Link href="/#collection" className="text-link justify-center">
+          Reset
         </Link>
       )}
     </form>

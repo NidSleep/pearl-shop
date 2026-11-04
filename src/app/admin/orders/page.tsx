@@ -16,23 +16,23 @@ export default async function AdminOrders({ searchParams }: {
   return (
     <div className="space-y-7">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <h1 className="font-serif text-3xl">Orders</h1>
+        <h1 className="page-title">Orders</h1>
         <form action="/admin/logout" method="post">
-          <button type="submit" className="rounded-md border border-stone-300 px-4 py-2 text-sm hover:bg-stone-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-700">Sign out</button>
+          <button type="submit" className="button button-secondary">Sign out</button>
         </form>
       </div>
       <form action="/admin/orders" method="get" className="flex flex-wrap items-end gap-3">
         <div className="space-y-2">
           <label htmlFor="status" className="block text-sm font-medium">Order status</label>
-          <select id="status" name="status" defaultValue={status} className="rounded-md border border-stone-300 bg-white px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-700">
+          <select id="status" name="status" defaultValue={status} className="field">
             <option value="">All statuses</option>
             {ORDER_STATUSES.map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}
           </select>
         </div>
-        <button type="submit" className="rounded-md bg-stone-900 px-4 py-2 text-sm text-white hover:bg-stone-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-700">Apply filter</button>
+        <button type="submit" className="button">Apply filter</button>
         <p className="py-2 text-sm text-stone-600">{count} {count === 1 ? "order" : "orders"}</p>
       </form>
-      <div className="overflow-x-auto rounded-md border border-stone-200 bg-white">
+      <div className="overflow-x-auto rounded-sm border border-stone-200 bg-white" role="region" aria-label="Orders table" tabIndex={0}>
         <table className="w-full text-left text-sm tabular-nums">
           <caption className="sr-only">Customer orders, newest first. Dates use Malaysia time. Items counts units.</caption>
           <thead className="border-b border-stone-200 bg-stone-100 text-stone-700">
@@ -46,7 +46,7 @@ export default async function AdminOrders({ searchParams }: {
                 <td className="whitespace-nowrap px-4 py-4"><time dateTime={order.created_at}>{dateFormat.format(new Date(order.created_at))}</time></td>
                 <th scope="row" className="px-4 py-4 font-medium"><span title={order.id}>{order.id.slice(0, 8)}</span></th>
                 <td className="px-4 py-4">
-                  <span className="capitalize">{order.status}</span>
+                  <span className="status-badge" data-status={order.status}>{order.status}</span>
                   {order.needs_attention && <span className="mt-1 block whitespace-nowrap text-xs font-medium text-amber-900">Needs attention</span>}
                 </td>
                 <td className="max-w-64 break-words px-4 py-4">{order.customer_email ?? "Not provided"}</td>
